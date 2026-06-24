@@ -1,4 +1,4 @@
-import { StrictMode, type ReactNode, useMemo, useState } from "react";
+﻿import { StrictMode, type ReactNode, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -21,8 +21,7 @@ import {
   ShieldCheck,
   Sparkles,
   Stethoscope,
-  UserCheck,
-  UsersRound
+  UserCheck
 } from "lucide-react";
 import "./styles.css";
 
@@ -254,7 +253,7 @@ function Overview() {
 }
 
 function Consultation() {
-  const [message, setMessage] = useState("这个药每天吃几次，有什么副作用");
+  const [message, setMessage] = useState("How often should this medication be taken, and what are the side effects?");
   const [response, setResponse] = useState<ChatResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -322,7 +321,7 @@ function Consultation() {
           </button>
           <button
             className="secondaryButton"
-            onClick={() => setMessage("老人术后卧床，怎么预防压疮？")}
+            onClick={() => setMessage("How can caregivers prevent pressure injuries after surgery?")}
             type="button"
           >
             Care example
@@ -392,7 +391,7 @@ function Jobs() {
           <article className="rowCard" key={job.title}>
             <div>
               <strong>{job.title}</strong>
-              <span>{job.city} · {job.patient}</span>
+              <span>{job.city} / {job.patient}</span>
             </div>
             <div>
               <span>Budget</span>
@@ -469,7 +468,7 @@ function Knowledge() {
             <BookOpenCheck size={20} />
             <strong>{collection.name}</strong>
             <span>{collection.chunks.toLocaleString()} chunks</span>
-            <small>{collection.freshness} · {collection.source}</small>
+            <small>{collection.freshness} / {collection.source}</small>
           </article>
         ))}
       </div>
