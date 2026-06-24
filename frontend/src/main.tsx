@@ -25,7 +25,7 @@ import {
 } from "lucide-react";
 import "./styles.css";
 
-type View = "overview" | "consultation" | "jobs" | "verification" | "knowledge" | "settings";
+type View = "overview" | "accounts" | "consultation" | "jobs" | "verification" | "knowledge" | "settings";
 
 type Metric = {
   label: string;
@@ -47,6 +47,7 @@ type ChatResponse = {
 
 const navItems: Array<{ id: View; label: string; icon: ReactNode }> = [
   { id: "overview", label: "Overview", icon: <LayoutDashboard size={18} /> },
+  { id: "accounts", label: "Accounts & Identity", icon: <UserCheck size={18} /> },
   { id: "consultation", label: "AI Consultation", icon: <MessageSquareText size={18} /> },
   { id: "jobs", label: "Care Jobs", icon: <BriefcaseMedical size={18} /> },
   { id: "verification", label: "Verification", icon: <UserCheck size={18} /> },
@@ -109,6 +110,19 @@ const collections = [
   { name: "platform.recruitment_process", chunks: 160, freshness: "Stable", source: "Internal FAQ" }
 ];
 
+
+const identitySteps = [
+  { title: "Register or sign in", text: "Phone and password based account access, with third-party login reserved as an adapter boundary." },
+  { title: "Create role profiles", text: "A single account can maintain patient and caregiver profiles independently." },
+  { title: "Switch active identity", text: "The current role changes available workflows without mixing cases, resumes, jobs, or applications." },
+  { title: "Review credentials", text: "Patient real-name checks and caregiver certificate reviews move through pending, approved, or rejected states." }
+];
+
+const identityProfiles = [
+  { label: "Patient identity", status: "Basic real-name pending", detail: "Can publish care jobs, maintain cases, invite caregivers, chat, and use AI consultation." },
+  { label: "Caregiver identity", status: "Certificate review pending", detail: "Can maintain resume, upload credentials, apply for jobs, accept invitations, and manage availability." },
+  { label: "Admin review", status: "Audit queue ready", detail: "Can review caregiver certificates, verification results, disputes, and platform content." }
+];
 const systemServices = [
   { name: "backend", port: 8000, status: "Ready", detail: "FastAPI business gateway" },
   { name: "ai-service", port: 8100, status: "Ready", detail: "Intent routing and response orchestration" },
@@ -175,6 +189,7 @@ function App() {
         </header>
 
         {activeView === "overview" && <Overview />}
+        {activeView === "accounts" && <AccountsIdentity />}
         {activeView === "consultation" && <Consultation />}
         {activeView === "jobs" && <Jobs />}
         {activeView === "verification" && <Verification />}
@@ -252,6 +267,62 @@ function Overview() {
   );
 }
 
+
+function AccountsIdentity() {
+  return (
+    <section className="dashboardGrid">
+      <article className="panel wide">
+        <div className="panelHeader">
+          <div>
+            <h2>Account & Identity Module</h2>
+            <p>Section 3.1 implementation: phone/password access, role profiles, manual identity switching, real-name verification, caregiver certificates, and review status flow.</p>
+          </div>
+          <UserCheck size={22} />
+        </div>
+        <div className="identityFlow">
+          {identitySteps.map((step, index) => (
+            <div className="identityStep" key={step.title}>
+              <span>{index + 1}</span>
+              <strong>{step.title}</strong>
+              <p>{step.text}</p>
+            </div>
+          ))}
+        </div>
+      </article>
+
+      <article className="panel">
+        <div className="panelHeader compact">
+          <h2>API Surface</h2>
+          <BadgeCheck size={20} />
+        </div>
+        <ul className="eventList">
+          <li>POST /api/v1/accounts/register</li>
+          <li>POST /api/v1/accounts/login</li>
+          <li>POST /api/v1/accounts/:id/roles/switch</li>
+          <li>PUT /api/v1/accounts/:id/profiles/patient</li>
+          <li>PUT /api/v1/accounts/:id/profiles/caregiver</li>
+          <li>POST /api/v1/accounts/:id/certifications</li>
+        </ul>
+      </article>
+
+      <article className="panel wide">
+        <div className="panelHeader compact">
+          <h2>Identity Profiles</h2>
+          <ShieldCheck size={20} />
+        </div>
+        <div className="identityCards">
+          {identityProfiles.map((profile) => (
+            <div className="identityCard" key={profile.label}>
+              <strong>{profile.label}</strong>
+              <span>{profile.status}</span>
+              <p>{profile.detail}</p>
+            </div>
+          ))}
+        </div>
+      </article>
+    </section>
+  );
+}
 function Consultation() {
   const [message, setMessage] = useState("How often should this medication be taken, and what are the side effects?");
   const [response, setResponse] = useState<ChatResponse | null>(null);
@@ -525,3 +596,5 @@ createRoot(document.getElementById("root")!).render(
     <App />
   </StrictMode>
 );
+
+

@@ -1,4 +1,4 @@
-:root {
+﻿:root {
   color: #1d2733;
   background: #f5f7f4;
   font-family:
@@ -625,5 +625,67 @@ textarea {
   .buttonRow {
     align-items: stretch;
     flex-direction: column;
+  }
+}
+
+.identityFlow,
+.identityCards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.identityStep,
+.identityCard {
+  min-height: 150px;
+  padding: 16px;
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.identityStep span {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  margin-bottom: 12px;
+  border-radius: 50%;
+  color: #ffffff;
+  background: #24715f;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.identityStep strong,
+.identityCard strong,
+.identityCard span {
+  display: block;
+}
+
+.identityStep p,
+.identityCard p {
+  margin: 8px 0 0;
+  color: #60726c;
+  line-height: 1.55;
+}
+
+.identityCard span {
+  margin-top: 8px;
+  color: #1f705d;
+  font-weight: 700;
+}
+
+@media (max-width: 1120px) {
+  .identityFlow,
+  .identityCards {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .identityFlow,
+  .identityCards {
+    grid-template-columns: 1fr;
   }
 }
