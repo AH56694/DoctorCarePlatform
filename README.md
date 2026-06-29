@@ -8,7 +8,6 @@ DoctorCarePlatform is a monorepo scaffold for an AI medical companion and caregi
 - `backend`: Main FastAPI business service
 - `ai-service`: AI consultation orchestration service with two-level intent classification, RAG routing, and cache boundaries
 - `embedding-service`: Independent embedding API with BGE-compatible interface and deterministic local fallback
-- `data-pipeline`: Offline web crawling and knowledge chunk pipeline scaffold
 - `infra`: Nginx and PostgreSQL initialization files
 
 ## Quick Start

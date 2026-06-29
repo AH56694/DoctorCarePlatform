@@ -14,6 +14,8 @@ body {
 }
 
 button,
+input,
+select,
 textarea {
   font: inherit;
 }
@@ -26,6 +28,34 @@ button {
   min-height: 100vh;
   display: grid;
   grid-template-columns: 264px minmax(0, 1fr);
+}
+
+.authShell {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    linear-gradient(135deg, rgba(36, 113, 95, 0.1), rgba(57, 119, 184, 0.08)),
+    #edf4f1;
+}
+
+.authPanel {
+  width: min(640px, 100%);
+  padding: 30px;
+  border: 1px solid #d4e2dc;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 48px rgba(35, 55, 48, 0.14);
+}
+
+.authBrand {
+  margin-bottom: 22px;
+  color: #1d2733;
+}
+
+.authBrand span {
+  color: #60726c;
 }
 
 .sidebar {
@@ -182,6 +212,24 @@ h2 {
   color: #24483f;
 }
 
+.logoutButton {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #cbd8d3;
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: #24483f;
+  background: #ffffff;
+  font-weight: 700;
+}
+
+.iconButton:hover,
+.logoutButton:hover {
+  background: #edf6f2;
+}
+
 .metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -251,6 +299,99 @@ h2 {
   gap: 18px;
 }
 
+.jobsLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(340px, 0.75fr);
+  gap: 18px;
+}
+
+.profilesLayout {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.profileCenterLayout {
+  display: grid;
+  grid-template-columns: minmax(320px, 0.72fr) minmax(0, 1.28fr);
+  gap: 18px;
+}
+
+.accountHero,
+.identityWorkbench {
+  min-height: 520px;
+}
+
+.accountCard {
+  display: grid;
+  gap: 18px;
+}
+
+.identitySlider {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid #c9d9d4;
+  border-radius: 8px;
+  background: #eef5f2;
+}
+
+.identitySlider button {
+  position: relative;
+  z-index: 1;
+  min-height: 54px;
+  border: 0;
+  border-radius: 6px;
+  color: #405650;
+  background: transparent;
+}
+
+.identitySlider button span,
+.identitySlider button small {
+  display: block;
+}
+
+.identitySlider button span {
+  font-weight: 800;
+}
+
+.identitySlider button small {
+  margin-top: 3px;
+  color: #60726c;
+}
+
+.identitySlider button.active,
+.identitySlider button.active small {
+  color: #ffffff;
+}
+
+.sliderThumb {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  width: calc(50% - 6px);
+  height: calc(100% - 8px);
+  border-radius: 6px;
+  background: #24715f;
+  transition: transform 180ms ease;
+}
+
+.sliderThumb.caregiver {
+  transform: translateX(calc(100% + 4px));
+}
+
+.chatLayout {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.34fr) minmax(0, 0.66fr);
+  gap: 18px;
+}
+
+.profileDirectory {
+  grid-column: 1 / -1;
+}
+
 .panel {
   padding: 20px;
   margin-bottom: 18px;
@@ -315,6 +456,84 @@ h2 {
 .serviceGrid {
   display: grid;
   gap: 12px;
+}
+
+.barChart {
+  min-height: 260px;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  align-items: end;
+  gap: 12px;
+  padding: 18px 8px 4px;
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.barColumn {
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+
+.barColumn span,
+.barColumn strong {
+  color: #60726c;
+  font-size: 12px;
+}
+
+.barColumn div {
+  width: min(42px, 72%);
+  border-radius: 8px 8px 3px 3px;
+  background: linear-gradient(180deg, #3b8f78, #1f705d);
+}
+
+.distributionList,
+.qualityList {
+  display: grid;
+  gap: 12px;
+}
+
+.distributionItem {
+  display: grid;
+  gap: 8px;
+}
+
+.distributionItem div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.distributionItem strong,
+.distributionItem span {
+  display: block;
+}
+
+.distributionItem span {
+  color: #60726c;
+}
+
+.qualityItem {
+  min-height: 92px;
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  padding: 14px;
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.qualityItem span,
+.qualityItem small {
+  color: #60726c;
+}
+
+.qualityItem strong {
+  font-size: 24px;
 }
 
 .progressItem {
@@ -470,6 +689,42 @@ textarea {
   padding: 16px;
 }
 
+.rowCard.selectable {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: stretch;
+  padding: 0;
+  overflow: hidden;
+}
+
+.rowCard.selected {
+  border-color: #24715f;
+  box-shadow: 0 0 0 2px rgba(36, 113, 95, 0.14);
+}
+
+.rowSelect {
+  width: 100%;
+  min-height: 82px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 0;
+  padding: 16px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+}
+
+.rowActionButton {
+  min-width: 76px;
+  border: 0;
+  border-left: 1px solid #d7e4df;
+  color: #1f705d;
+  background: #f8fbfa;
+  font-weight: 800;
+}
+
 .rowCard strong,
 .rowCard span,
 .serviceItem strong,
@@ -561,6 +816,537 @@ textarea {
   color: #4e625b;
 }
 
+.formGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.jobPublishForm {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.formGrid input,
+.formGrid select,
+#consultationFiles {
+  min-width: 0;
+  min-height: 40px;
+  border: 1px solid #c9d9d4;
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: #1e2a33;
+  background: #fbfdfc;
+}
+
+.uploadControl {
+  min-width: 0;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px dashed #9fbbb2;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #24483f;
+  background: #f7fbf9;
+  cursor: pointer;
+}
+
+.uploadControl:hover {
+  border-color: #24715f;
+  background: #edf6f2;
+}
+
+.uploadControl svg {
+  flex: 0 0 auto;
+  color: #24715f;
+}
+
+.uploadControl span,
+.uploadControl strong,
+.uploadControl small {
+  display: block;
+  min-width: 0;
+}
+
+.uploadControl strong {
+  font-size: 14px;
+}
+
+.uploadControl small {
+  margin-top: 3px;
+  overflow: hidden;
+  color: #60726c;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.uploadControl input[type="file"] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.wideUpload {
+  margin-bottom: 4px;
+}
+
+.inviteForm {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  align-items: start;
+  margin-top: 14px;
+}
+
+.compactButton {
+  margin-top: 0;
+}
+
+.profileSearch {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.miniList,
+.caregiverGrid {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.miniItem {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.miniItem strong,
+.miniItem span,
+.caregiverTile strong,
+.caregiverTile span,
+.caregiverTile small {
+  display: block;
+}
+
+.miniItem span,
+.caregiverTile span,
+.caregiverTile small {
+  color: #64746f;
+  line-height: 1.45;
+}
+
+.inlineActions {
+  display: flex;
+  gap: 8px;
+}
+
+.inlineActions button {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #c9d9d4;
+  border-radius: 8px;
+  color: #24483f;
+  background: #ffffff;
+}
+
+.caregiverGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.caregiverTile {
+  min-height: 118px;
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  padding: 14px;
+  color: inherit;
+  background: #f8fbfa;
+  text-align: left;
+}
+
+.caregiverTile:hover,
+.inlineActions button:hover,
+.rowSelect:hover {
+  background: #edf6f2;
+}
+
+.profileSurface {
+  display: grid;
+  gap: 14px;
+}
+
+.profileHeaderLine {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.profileHeaderLine > div:nth-child(2) {
+  min-width: 0;
+  flex: 1;
+}
+
+.profileHeaderLine strong,
+.profileHeaderLine span {
+  display: block;
+}
+
+.profileHeaderLine span,
+.mutedText,
+.profileBio {
+  color: #60726c;
+}
+
+.profileAvatar {
+  width: 50px;
+  height: 50px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #ffffff;
+  background: #24715f;
+  font-weight: 800;
+}
+
+.caregiverAvatar {
+  background: #3977b8;
+}
+
+.profileFacts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.profileFacts div {
+  min-height: 72px;
+  padding: 12px;
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.profileFacts span,
+.profileFacts strong {
+  display: block;
+}
+
+.profileFacts span {
+  margin-bottom: 6px;
+  color: #64746f;
+  font-size: 12px;
+}
+
+.profileBio {
+  margin-bottom: 0;
+  line-height: 1.6;
+}
+
+.availabilityButton {
+  margin-top: 0;
+}
+
+.compactEmpty {
+  min-height: 200px;
+}
+
+.directoryFilters {
+  grid-template-columns: minmax(220px, 320px) auto;
+  align-items: center;
+}
+
+.reviewWorkbench {
+  grid-column: 1 / -1;
+}
+
+.reviewForm {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.notificationCenter {
+  grid-column: 1 / -1;
+}
+
+.smsForm {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.authForm,
+.certificateForm {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.authQuickHints {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 16px 0 18px;
+}
+
+.authQuickHints div {
+  min-height: 48px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #24483f;
+  background: #f8fbfa;
+  font-weight: 700;
+}
+
+.authQuickHints svg {
+  color: #24715f;
+  flex: 0 0 auto;
+}
+
+.rememberedLogin {
+  margin: 0 0 14px;
+  padding: 12px;
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.savedAccountRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+}
+
+.savedAccountRow select {
+  min-width: 0;
+  min-height: 40px;
+  border: 1px solid #c9d9d4;
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: #1e2a33;
+  background: #ffffff;
+}
+
+.segmentedControl {
+  display: inline-flex;
+  padding: 4px;
+  margin-bottom: 14px;
+  border: 1px solid #c9d9d4;
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.segmentedControl button,
+.roleChips button {
+  min-height: 34px;
+  border: 0;
+  border-radius: 6px;
+  padding: 7px 12px;
+  color: #405650;
+  background: transparent;
+}
+
+.segmentedControl button.active,
+.roleChips button.active {
+  color: #ffffff;
+  background: #24715f;
+}
+
+.accountSummary,
+.roleChips,
+.attachmentList {
+  display: grid;
+  gap: 8px;
+}
+
+.accountSummary strong,
+.accountSummary span,
+.attachmentList span {
+  display: block;
+}
+
+.accountSummary span,
+.attachmentList span {
+  color: #60726c;
+}
+
+.roleChips {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 12px;
+}
+
+.roleChips button {
+  border: 1px solid #c9d9d4;
+  background: #ffffff;
+}
+
+.attachmentList {
+  margin-top: 10px;
+}
+
+.attachmentList span {
+  padding: 9px 11px;
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.compactCollections {
+  grid-template-columns: 1fr;
+}
+
+.conversationPanel,
+.chatPanel {
+  min-height: 640px;
+}
+
+.conversationTile {
+  width: 100%;
+  display: grid;
+  gap: 6px;
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  padding: 12px;
+  color: inherit;
+  background: #f8fbfa;
+  text-align: left;
+}
+
+.conversationTile.active,
+.conversationTile:hover,
+.rowActionButton:hover {
+  background: #edf6f2;
+}
+
+.conversationTile.active {
+  border-color: #24715f;
+}
+
+.conversationTile strong,
+.conversationTile span {
+  display: block;
+}
+
+.conversationTile span {
+  color: #64746f;
+  font-size: 13px;
+}
+
+.messageList {
+  min-height: 420px;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.messageBubble {
+  max-width: 74%;
+  justify-self: start;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.messageBubble.mine {
+  justify-self: end;
+  color: #ffffff;
+  background: #24715f;
+}
+
+.messageBubble span,
+.messageBubble p {
+  display: block;
+}
+
+.messageBubble span {
+  margin-bottom: 4px;
+  font-size: 12px;
+  opacity: 0.78;
+}
+
+.messageBubble p {
+  margin: 0;
+  line-height: 1.55;
+}
+
+.chatComposer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  margin-top: 12px;
+}
+
+.chatComposer textarea {
+  min-height: 88px;
+}
+
+.adminSection {
+  min-height: 280px;
+}
+
+.adminMetricGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.adminMetric {
+  min-height: 90px;
+  padding: 14px;
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.adminMetric span,
+.adminMetric strong {
+  display: block;
+}
+
+.adminMetric span {
+  margin-bottom: 10px;
+  color: #64746f;
+  text-transform: capitalize;
+}
+
+.adminMetric strong {
+  font-size: 24px;
+}
+
+.checkLine {
+  min-height: 40px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #405650;
+  font-weight: 700;
+}
+
+.checkLine input {
+  width: 16px;
+  height: 16px;
+}
+
+.rememberLine {
+  width: 100%;
+  margin: 2px 0 0;
+  font-size: 14px;
+}
+
 .spin {
   animation: spin 1s linear infinite;
 }
@@ -577,13 +1363,19 @@ textarea {
   }
 
   .dashboardGrid,
+  .jobsLayout,
+  .profilesLayout,
+  .profileCenterLayout,
+  .chatLayout,
   .consultationLayout {
     grid-template-columns: 1fr;
   }
 
   .flowLine,
   .verificationGrid,
-  .collectionGrid {
+  .collectionGrid,
+  .adminMetricGrid,
+  .caregiverGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -607,9 +1399,13 @@ textarea {
 
   .topbar,
   .panelHeader,
+  .profileHeaderLine,
   .progressItem div,
   .serviceItem,
-  .rowCard {
+  .rowCard,
+  .rowSelect,
+  .miniItem,
+  .chatComposer {
     align-items: flex-start;
     flex-direction: column;
   }
@@ -618,13 +1414,43 @@ textarea {
   .flowLine,
   .verificationGrid,
   .collectionGrid,
+  .adminMetricGrid,
+  .caregiverGrid,
+  .authQuickHints,
+  .formGrid,
+  .inviteForm,
+  .profileSearch,
+  .profileFacts,
+  .directoryFilters,
+  .authForm,
+  .certificateForm,
+  .roleChips,
+  .identitySlider,
+  .savedAccountRow,
+  .chatComposer,
   .intentGrid {
     grid-template-columns: 1fr;
+  }
+
+  .sliderThumb,
+  .sliderThumb.caregiver {
+    display: none;
+  }
+
+  .identitySlider button.active {
+    background: #24715f;
   }
 
   .buttonRow {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .rowActionButton {
+    width: 100%;
+    min-height: 42px;
+    border-left: 0;
+    border-top: 1px solid #d7e4df;
   }
 }
 

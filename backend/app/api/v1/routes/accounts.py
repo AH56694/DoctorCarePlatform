@@ -23,6 +23,7 @@ from backend.app.schemas.accounts import (
     UserRoleRead,
 )
 from backend.app.services.auth import hash_password, verify_password
+from backend.app.services.sms import SmsNotificationService
 
 router = APIRouter()
 
@@ -294,6 +295,18 @@ async def review_certification(
         if role:
             role.verification_status = certification.review_status
     db.commit()
+    if caregiver and caregiver.user.phone:
+        await SmsNotificationService().create_and_send(
+            db,
+            scene="verification_result",
+            user_id=caregiver.user_id,
+            phone=caregiver.user.phone,
+            payload={
+                "certification_id": certification.id,
+                "certificate_type": certification.certificate_type,
+                "status": certification.review_status,
+            },
+        )
     return CertificationRead(
         id=certification.id,
         caregiver_profile_id=certification.caregiver_profile_id,
