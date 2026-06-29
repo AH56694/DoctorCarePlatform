@@ -42,11 +42,6 @@ EMERGENCY_KEYWORDS = (
     "意识不清",
     "严重过敏",
     "休克",
-    # Common mojibake strings kept for legacy tests and incorrectly encoded input.
-    "鑷潃",
-    "涓嶆兂娲",
-    "鑳哥棝",
-    "鍛煎惛鍥伴毦",
 )
 
 CHITCHAT_KEYWORDS = ("你好", "谢谢", "在吗", "辛苦", "陪我聊", "焦虑", "害怕")
@@ -76,20 +71,17 @@ RULES = [
             "dose",
             "side effect",
             "side effects",
-            "鑽",
-            "鍓傞噺",
-            "鍓綔",
         ),
     ),
     IntentRule(
         "medical_consult",
         "report_interpretation",
-        ("报告", "化验", "指标", "CT", "核磁", "B超", "血常规", "尿检", "report", "lab", "indicator", "鎶ュ憡", "鎸囨爣"),
+        ("报告", "化验", "指标", "CT", "核磁", "B超", "血常规", "尿检", "report", "lab", "indicator"),
     ),
     IntentRule(
         "medical_consult",
         "care_method",
-        ("护理", "陪护", "压疮", "术后", "翻身", "照护", "康复", "换药", "care", "nursing", "rehab", "鎶ょ悊", "闄姢"),
+        ("护理", "陪护", "压疮", "术后", "翻身", "照护", "康复", "换药", "care", "nursing", "rehab"),
     ),
     IntentRule(
         "medical_consult",
