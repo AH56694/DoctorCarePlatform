@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from backend.app.db.models import AiMessage, AiSession
 from backend.app.db.session import get_db
 from backend.app.schemas.chat import AiChatRequest, AiChatResponse
-from backend.app.services.ai_client import AiServiceClient
+from backend.app.services.rag_client import RagServiceClient
 
 router = APIRouter()
 
@@ -12,7 +12,7 @@ router = APIRouter()
 @router.post("/chat", response_model=AiChatResponse)
 async def chat(payload: AiChatRequest, db: Session = Depends(get_db)) -> AiChatResponse:
     ai_payload = payload.model_copy(update={"message": _message_with_attachments(payload)})
-    response = await AiServiceClient().chat(ai_payload)
+    response = await RagServiceClient().chat(ai_payload)
     session = _get_or_create_ai_session(db, payload, response)
     user_message = AiMessage(
         session_id=session.id,

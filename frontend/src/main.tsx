@@ -220,6 +220,21 @@ type AdminLog = {
   created_at?: string | null;
 };
 
+type AdminKnowledgeItem = {
+  id: string;
+  collection: string;
+  category: string;
+  subcategory: string;
+  title: string;
+  content: string;
+  file_name: string;
+  file_type: string;
+  rag_doc_id?: number | null;
+  rag_status: string;
+  rag_chunk_count: number;
+  created_at?: string | null;
+};
+
 type RoleName = "patient" | "caregiver" | "admin";
 
 type AccountRead = {
@@ -512,6 +527,8 @@ function statusLabel(status: string | undefined | null) {
     matched: "已匹配",
     closed: "已关闭",
     cancelled: "已取消",
+    indexed: "已入库",
+    failed: "入库失败",
     draft: "草稿",
     public: "公开",
     private: "私密",
@@ -2573,9 +2590,52 @@ function Knowledge() {
     title: "",
     content: "",
     file_name: "",
-    file_type: ""
+    file_type: "",
+    file_content_base64: ""
   });
-  const [uploadedKnowledge, setUploadedKnowledge] = useState<Array<{ id: string; collection: string; title: string; content: string; file_name: string; file_type: string }>>([]);
+  const [uploadedKnowledge, setUploadedKnowledge] = useState<AdminKnowledgeItem[]>([]);
+  const [notice, setNotice] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+    const response = await fetch(path, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {})
+      }
+    });
+    if (!response.ok) {
+      const message = await response.text();
+      throw new Error(message || `接口返回 ${response.status}`);
+    }
+    return response.json() as Promise<T>;
+  }
+
+  async function loadKnowledgeItems() {
+    try {
+      const rows = await requestJson<AdminKnowledgeItem[]>("/api/v1/admin/knowledge-items?limit=100");
+      setUploadedKnowledge(rows);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "加载知识库失败。");
+    }
+  }
+
+  useEffect(() => {
+    void loadKnowledgeItems();
+  }, []);
+
+  function readFileAsBase64(file: File): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const result = String(reader.result || "");
+        resolve(result.includes(",") ? result.split(",")[1] : result);
+      };
+      reader.onerror = () => reject(reader.error || new Error("文件读取失败。"));
+      reader.readAsDataURL(file);
+    });
+  }
 
   async function handleKnowledgeFile(files: FileList | null) {
     const file = files?.[0];
@@ -2588,34 +2648,61 @@ function Knowledge() {
       file.name.endsWith(".md") ||
       file.name.endsWith(".csv") ||
       file.name.endsWith(".json");
-    const content = isReadableText ? (await file.text()).slice(0, 20000) : "";
+    const [content, fileContentBase64] = await Promise.all([
+      isReadableText ? file.text() : Promise.resolve(""),
+      readFileAsBase64(file)
+    ]);
     setKnowledgeForm({
       ...knowledgeForm,
       title: knowledgeForm.title || file.name.replace(/\.[^.]+$/, ""),
-      content: content || knowledgeForm.content,
+      content: content.slice(0, 20000) || knowledgeForm.content,
       file_name: file.name,
-      file_type: file.type || "未知类型"
+      file_type: file.type || "未知类型",
+      file_content_base64: fileContentBase64
     });
   }
 
-  function uploadKnowledge() {
-    if (!knowledgeForm.title.trim() || (!knowledgeForm.content.trim() && !knowledgeForm.file_name)) {
+  async function uploadKnowledge() {
+    if (!knowledgeForm.title.trim() || (!knowledgeForm.content.trim() && !knowledgeForm.file_content_base64)) {
       return;
     }
-    setUploadedKnowledge((current) => [
-      {
-        ...knowledgeForm,
-        id: crypto.randomUUID(),
-        title: knowledgeForm.title.trim(),
-        content: knowledgeForm.content.trim()
-      },
-      ...current
-    ]);
-    setKnowledgeForm({ ...knowledgeForm, title: "", content: "", file_name: "", file_type: "" });
+    setLoading(true);
+    setNotice("");
+    try {
+      const created = await requestJson<AdminKnowledgeItem>("/api/v1/admin/knowledge-items", {
+        method: "POST",
+        body: JSON.stringify({
+          collection: knowledgeForm.collection,
+          title: knowledgeForm.title.trim(),
+          content: knowledgeForm.content.trim(),
+          file_name: knowledgeForm.file_name,
+          file_type: knowledgeForm.file_type,
+          file_content_base64: knowledgeForm.file_content_base64
+        })
+      });
+      setUploadedKnowledge((current) => [created, ...current]);
+      setKnowledgeForm({ ...knowledgeForm, title: "", content: "", file_name: "", file_type: "", file_content_base64: "" });
+      setNotice(`知识已写入 RAG 知识库，共生成 ${created.rag_chunk_count} 个片段。`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "上传知识失败。");
+    } finally {
+      setLoading(false);
+    }
   }
 
-  function deleteKnowledgeItem(itemId: string) {
-    setUploadedKnowledge((current) => current.filter((item) => item.id !== itemId));
+  async function deleteKnowledgeItem(itemId: string) {
+    setNotice("");
+    try {
+      const response = await fetch(`/api/v1/admin/knowledge-items/${itemId}`, { method: "DELETE" });
+      if (!response.ok) {
+        const message = await response.text();
+        throw new Error(message || `接口返回 ${response.status}`);
+      }
+      setUploadedKnowledge((current) => current.filter((item) => item.id !== itemId));
+      setNotice("知识已从平台和 RAG 知识库删除。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "删除知识失败。");
+    }
   }
 
   return (
@@ -2628,6 +2715,7 @@ function Knowledge() {
           </div>
           <Database size={22} />
         </div>
+        {notice && <p className="notice">{notice}</p>}
         <div className="formGrid">
           <select value={knowledgeForm.collection} onChange={(event) => setKnowledgeForm({ ...knowledgeForm, collection: event.target.value })}>
             {collections.map((collection) => (
@@ -2645,8 +2733,8 @@ function Knowledge() {
           <input id="knowledgeFileUpload" onChange={(event) => void handleKnowledgeFile(event.target.files)} type="file" />
         </label>
         <textarea placeholder="知识内容" value={knowledgeForm.content} onChange={(event) => setKnowledgeForm({ ...knowledgeForm, content: event.target.value })} />
-        <button className="primaryButton" disabled={!knowledgeForm.title.trim() || (!knowledgeForm.content.trim() && !knowledgeForm.file_name)} onClick={uploadKnowledge} type="button">
-          <Send size={18} />
+        <button className="primaryButton" disabled={loading || !knowledgeForm.title.trim() || (!knowledgeForm.content.trim() && !knowledgeForm.file_content_base64)} onClick={() => void uploadKnowledge()} type="button">
+          {loading ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
           <span>上传知识</span>
         </button>
       </article>
@@ -2678,10 +2766,18 @@ function Knowledge() {
             <div className="miniItem" key={item.id}>
               <div>
                 <strong>{item.title}</strong>
-                <span>{collections.find((collection) => collection.key === item.collection)?.name || item.collection} / {item.file_name || "手动录入"} / {(item.content || "非文本文件").slice(0, 80)}</span>
+                <span>
+                  {collections.find((collection) => collection.key === item.collection)?.name || item.collection}
+                  {" / "}
+                  {item.file_name || "手动录入"}
+                  {" / "}
+                  {statusLabel(item.rag_status)}
+                  {" / "}
+                  {item.rag_chunk_count} 个片段
+                </span>
               </div>
               <div className="inlineActions">
-                <button title="删除知识" onClick={() => deleteKnowledgeItem(item.id)} type="button">
+                <button title="删除知识" onClick={() => void deleteKnowledgeItem(item.id)} type="button">
                   <Trash2 size={17} />
                 </button>
               </div>

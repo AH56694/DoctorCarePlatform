@@ -17,7 +17,7 @@ services:
       PROJECT_NAME: ${PROJECT_NAME:-DoctorCarePlatform}
       DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://medical_app:change-me@postgres:5432/doctor_care_platform}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      AI_SERVICE_URL: ${AI_SERVICE_URL:-http://ai-service:8100}
+      RAG_SERVICE_URL: ${RAG_SERVICE_URL:-http://python-service:8300}
       ALIYUN_SMS_ACCESS_KEY_ID: ${ALIYUN_SMS_ACCESS_KEY_ID:-}
       ALIYUN_SMS_ACCESS_KEY_SECRET: ${ALIYUN_SMS_ACCESS_KEY_SECRET:-}
       ALIYUN_SMS_SIGN_NAME: ${ALIYUN_SMS_SIGN_NAME:-}
@@ -26,44 +26,40 @@ services:
       - postgres
       - redis
       - minio
-      - ai-service
+      - python-service
     ports:
       - "8000:8000"
 
-  ai-service:
+  python-service:
     build:
       context: .
-      dockerfile: ai-service/Dockerfile
+      dockerfile: python-service/Dockerfile
     environment:
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      EMBEDDING_MODEL: ${PYTHON_SERVICE_EMBEDDING_MODEL:-local}
+      LOCAL_EMBEDDING_MODEL_PATH: ${LOCAL_EMBEDDING_MODEL_PATH:-/app/models/bge-small-zh-v1.5}
+      USE_MILVUS: ${USE_MILVUS:-false}
+      VECTOR_STORE_PERSIST_DIR: ${VECTOR_STORE_PERSIST_DIR:-/app/faiss_index}
+      VECTOR_STORE_COLLECTION_NAME: ${VECTOR_STORE_COLLECTION_NAME:-doctorcare_medical_knowledge}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      EMBEDDING_SERVICE_URL: ${EMBEDDING_SERVICE_URL:-http://embedding-service:8200}
-      LLM_BASE_URL: ${LLM_BASE_URL:-https://api.deepseek.com}
-      LLM_API_KEY: ${LLM_API_KEY:-}
-      LLM_MODEL: ${LLM_MODEL:-deepseek-chat}
-      INTENT_CONFIDENCE_THRESHOLD: ${INTENT_CONFIDENCE_THRESHOLD:-0.6}
+      MYSQL_HOST: ${MYSQL_HOST:-mysql}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-ai_knowledge_db}
+      MYSQL_USERNAME: ${MYSQL_USERNAME:-root}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me}
     depends_on:
-      - postgres
       - redis
-      - embedding-service
     ports:
-      - "8100:8100"
-
-  embedding-service:
-    build:
-      context: .
-      dockerfile: embedding-service/Dockerfile
-    environment:
-      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-base-zh-v1.5}
-      EMBEDDING_DIMENSION: ${EMBEDDING_DIMENSION:-768}
-    ports:
-      - "8200:8200"
+      - "8300:8300"
+    volumes:
+      - python-service-faiss:/app/faiss_index
 
   nginx:
     image: nginx:1.27-alpine
     depends_on:
       - frontend
       - backend
-      - ai-service
+      - python-service
     ports:
       - "8080:80"
     volumes:
@@ -101,3 +97,4 @@ services:
 volumes:
   postgres-data:
   minio-data:
+  python-service-faiss:

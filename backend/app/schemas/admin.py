@@ -111,6 +111,32 @@ class AdminAiModelConfigRead(BaseModel):
     updated_at: datetime | None = None
 
 
+class AdminKnowledgeCreate(BaseModel):
+    collection: str = Field(default="medical.symptom_inquiry", max_length=128)
+    title: str = Field(min_length=1, max_length=255)
+    content: str = ""
+    file_name: str = Field(default="", max_length=255)
+    file_type: str = Field(default="", max_length=120)
+    file_content_base64: str = ""
+    admin_id: str | None = None
+
+
+class AdminKnowledgeRead(BaseModel):
+    id: str
+    collection: str
+    category: str = ""
+    subcategory: str = ""
+    title: str = ""
+    content: str = ""
+    file_name: str = ""
+    file_type: str = ""
+    rag_doc_id: int | None = None
+    rag_status: str = ""
+    rag_chunk_count: int = 0
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
 class AdminLogRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

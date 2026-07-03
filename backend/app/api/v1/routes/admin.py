@@ -1,9 +1,13 @@
+from uuid import UUID
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from backend.app.db.models import (
     AdminLog,
+    AiKnowledgeChunk,
     AiMessage,
     AiModelConfig,
     AiSession,
@@ -26,14 +30,25 @@ from backend.app.schemas.admin import (
     AdminCertificationRead,
     AdminCertificationReview,
     AdminChatMessageRead,
+    AdminKnowledgeCreate,
+    AdminKnowledgeRead,
     AdminLogRead,
     AdminSummaryRead,
     AdminUserRead,
     AdminUserStatusUpdate,
 )
+from backend.app.services.rag_client import RagServiceClient
 from backend.app.services.sms import SmsNotificationService
 
 router = APIRouter()
+
+KNOWLEDGE_COLLECTIONS: dict[str, tuple[str, str]] = {
+    "medical.symptom_inquiry": ("medical", "symptom_inquiry"),
+    "medical.medication_consult": ("medical", "medication_consult"),
+    "medical.report_interpretation": ("medical", "report_interpretation"),
+    "medical.care_method": ("medical", "care_method"),
+    "platform.recruitment_process": ("platform", "recruitment_process"),
+}
 
 
 def _log_admin_action(
@@ -63,6 +78,29 @@ def _get_user(db: Session, user_id: str) -> User:
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return user
+
+
+def _rag_doc_id(item_id: str) -> int:
+    return UUID(item_id).int % 2_147_483_647 or 1
+
+
+def _knowledge_read(item: AiKnowledgeChunk) -> AdminKnowledgeRead:
+    metadata = item.metadata_json or {}
+    return AdminKnowledgeRead(
+        id=item.id,
+        collection=item.collection,
+        category=item.category,
+        subcategory=item.subcategory,
+        title=metadata.get("title", ""),
+        content=item.content,
+        file_name=metadata.get("file_name", ""),
+        file_type=metadata.get("file_type", ""),
+        rag_doc_id=metadata.get("rag_doc_id"),
+        rag_status=metadata.get("rag_status", ""),
+        rag_chunk_count=int(metadata.get("rag_chunk_count", 0) or 0),
+        created_at=item.created_at,
+        updated_at=item.updated_at,
+    )
 
 
 def _certification_read(certification: Certification) -> AdminCertificationRead:
@@ -262,6 +300,132 @@ async def list_chat_messages(
         )
         for item in messages
     ]
+
+
+@router.get("/knowledge-items", response_model=list[AdminKnowledgeRead])
+async def list_knowledge_items(
+    collection: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[AdminKnowledgeRead]:
+    query = db.query(AiKnowledgeChunk)
+    if collection:
+        query = query.filter(AiKnowledgeChunk.collection == collection)
+    rows = query.order_by(AiKnowledgeChunk.created_at.desc()).limit(limit).all()
+    return [_knowledge_read(item) for item in rows]
+
+
+@router.post("/knowledge-items", response_model=AdminKnowledgeRead, status_code=status.HTTP_201_CREATED)
+async def create_knowledge_item(
+    payload: AdminKnowledgeCreate,
+    db: Session = Depends(get_db),
+) -> AdminKnowledgeRead:
+    if payload.collection not in KNOWLEDGE_COLLECTIONS:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不支持的知识库分类。")
+    if not payload.content.strip() and not payload.file_content_base64:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="请填写知识内容或上传文件。")
+
+    category, subcategory = KNOWLEDGE_COLLECTIONS[payload.collection]
+    item = AiKnowledgeChunk(
+        category=category,
+        subcategory=subcategory,
+        collection=payload.collection,
+        content=payload.content.strip(),
+        source_url=payload.file_name,
+        metadata_json={
+            "title": payload.title.strip(),
+            "file_name": payload.file_name,
+            "file_type": payload.file_type,
+            "rag_status": "pending",
+        },
+    )
+    db.add(item)
+    db.flush()
+
+    rag_doc_id = _rag_doc_id(item.id)
+    try:
+        rag_result = await RagServiceClient().ingest_knowledge(
+            {
+                "doc_id": rag_doc_id,
+                "title": payload.title.strip(),
+                "collection": payload.collection,
+                "category": category,
+                "subcategory": subcategory,
+                "content": payload.content.strip(),
+                "file_name": payload.file_name,
+                "file_type": payload.file_type,
+                "file_content_base64": payload.file_content_base64,
+                "source": payload.file_name or payload.title.strip(),
+                "metadata": {"platform_knowledge_id": item.id, "admin_id": payload.admin_id},
+            }
+        )
+    except httpx.HTTPError as exc:
+        item.metadata_json = {
+            **(item.metadata_json or {}),
+            "rag_doc_id": rag_doc_id,
+            "rag_status": "failed",
+            "rag_error": str(exc),
+        }
+        _log_admin_action(
+            db,
+            action="knowledge.ingest_failed",
+            admin_id=payload.admin_id,
+            target_type="ai_knowledge_chunk",
+            target_id=item.id,
+            target=payload.title,
+            detail={"collection": payload.collection, "error": str(exc)},
+        )
+        db.commit()
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="RAG 微服务入库失败，请确认 python-service 已启动。") from exc
+
+    item.metadata_json = {
+        **(item.metadata_json or {}),
+        "rag_doc_id": rag_doc_id,
+        "rag_status": "indexed",
+        "rag_chunk_count": int(rag_result.get("chunks_count", 0) or 0),
+    }
+    _log_admin_action(
+        db,
+        action="knowledge.ingest",
+        admin_id=payload.admin_id,
+        target_type="ai_knowledge_chunk",
+        target_id=item.id,
+        target=payload.title,
+        detail={"collection": payload.collection, "rag_doc_id": rag_doc_id, "rag_result": rag_result},
+    )
+    db.commit()
+    db.refresh(item)
+    return _knowledge_read(item)
+
+
+@router.delete("/knowledge-items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_knowledge_item(
+    item_id: str,
+    admin_id: str | None = None,
+    db: Session = Depends(get_db),
+) -> None:
+    item = db.query(AiKnowledgeChunk).filter(AiKnowledgeChunk.id == item_id).first()
+    if not item:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="知识不存在。")
+
+    metadata = item.metadata_json or {}
+    rag_doc_id = metadata.get("rag_doc_id") or _rag_doc_id(item.id)
+    try:
+        await RagServiceClient().delete_knowledge(int(rag_doc_id))
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="RAG 微服务删除失败，请稍后重试。") from exc
+
+    _log_admin_action(
+        db,
+        action="knowledge.delete",
+        admin_id=admin_id,
+        target_type="ai_knowledge_chunk",
+        target_id=item.id,
+        target=metadata.get("title", item.source_url),
+        detail={"collection": item.collection, "rag_doc_id": rag_doc_id},
+    )
+    db.delete(item)
+    db.commit()
 
 
 @router.get("/ai-model-configs", response_model=list[AdminAiModelConfigRead])
