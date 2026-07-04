@@ -12,10 +12,10 @@ foreach ($processId in $processIds) {
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Push-Location $root
 try {
-  docker compose stop redis minio
+  docker compose stop redis minio mysql
 } finally {
   Pop-Location
 }
 
-Write-Host "Stopped local app ports 5173, 8000, 8300 and Docker infra redis/minio."
+Write-Host "Stopped local app ports 5173, 8000, 8300 and Docker infra redis/minio/mysql."
 Write-Host "Logs remain in: $(Join-Path $root '.local-logs')"

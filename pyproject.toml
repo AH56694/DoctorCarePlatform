@@ -1,6 +1,10 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["."]
+pythonpath = [".", "python-service"]
+
+[tool.pyright]
+extraPaths = ["python-service"]
+include = ["backend", "python-service", "tests"]
 
 [tool.ruff]
 line-length = 100

@@ -74,7 +74,8 @@ Stop-PortListeners @(5173, 8000, 8300)
 if (-not $SkipInfra) {
   Push-Location $root
   try {
-    docker compose up -d redis minio
+    docker compose up -d redis minio mysql
+    & (Join-Path $PSScriptRoot "init-mysql.ps1")
   } finally {
     Pop-Location
   }
@@ -92,14 +93,21 @@ $ragCommand = @"
 `$env:USE_MILVUS='false';
 `$env:VECTOR_STORE_PERSIST_DIR='$faissPath';
 `$env:VECTOR_STORE_COLLECTION_NAME='doctorcare_medical_knowledge';
+`$env:REDIS_URL='redis://127.0.0.1:6379/0';
 `$env:REDIS_HOST='127.0.0.1';
 `$env:REDIS_PORT='6379';
+`$env:REDIS_DB='0';
+`$env:MYSQL_HOST='127.0.0.1';
+`$env:MYSQL_PORT='3306';
+`$env:MYSQL_DATABASE='doctor_care_platform';
+`$env:MYSQL_USERNAME='root';
+`$env:MYSQL_PASSWORD='change-me';
 & '$rootPython' -m uvicorn main:app --reload --host 127.0.0.1 --port 8300
 "@
 
 $backendCommand = @"
 `$env:PYTHONIOENCODING='utf-8';
-`$env:DATABASE_URL='sqlite+pysqlite:///./local.db';
+`$env:DATABASE_URL='mysql+pymysql://root:change-me@127.0.0.1:3306/doctor_care_platform?charset=utf8mb4';
 `$env:RAG_SERVICE_URL='http://127.0.0.1:8300';
 `$env:REDIS_URL='redis://127.0.0.1:6379/0';
 .\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000

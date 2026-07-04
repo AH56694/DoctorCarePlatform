@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from backend.app.db.models import AiMessage, AiSession
 from backend.app.db.session import get_db
 from backend.app.schemas.chat import AiChatRequest, AiChatResponse
+from backend.app.services.message_cache import message_cache
 from backend.app.services.rag_client import RagServiceClient
 
 router = APIRouter()
@@ -57,6 +58,9 @@ async def chat(payload: AiChatRequest, db: Session = Depends(get_db)) -> AiChatR
         session.risk_flag = "emergency"
     db.add_all([user_message, assistant_message])
     db.commit()
+    db.refresh(user_message)
+    db.refresh(assistant_message)
+    _cache_ai_messages(session, user_message, assistant_message)
     return response
 
 
@@ -306,6 +310,9 @@ def _persist_ai_messages(db: Session, payload: AiChatRequest, response: AiChatRe
         session.risk_flag = "emergency"
     db.add_all([user_message, assistant_message])
     db.commit()
+    db.refresh(user_message)
+    db.refresh(assistant_message)
+    _cache_ai_messages(session, user_message, assistant_message)
 
 
 def _sse(payload: dict[str, Any]) -> str:
@@ -368,6 +375,34 @@ def _get_or_create_ai_session(db: Session, payload: AiChatRequest, response: AiC
         db.add(session)
         db.flush()
     return session
+
+
+def _cache_ai_messages(
+    session: AiSession,
+    user_message: AiMessage,
+    assistant_message: AiMessage,
+) -> None:
+    session_id = str(session.id)
+    for message in (user_message, assistant_message):
+        message_cache.add_message(
+            "ai",
+            session_id,
+            {
+                "id": message.id,
+                "session_id": message.session_id,
+                "conversation_id": message.conversation_id,
+                "sender": message.sender,
+                "content": message.content,
+                "user_message": message.user_message,
+                "assistant_message": message.assistant_message,
+                "intent_category": message.intent_category,
+                "intent_subcategory": message.intent_subcategory,
+                "intent_confidence": message.intent_confidence,
+                "cache_hit_level": message.cache_hit_level,
+                "metadata_json": message.metadata_json,
+                "created_at": message.created_at,
+            },
+        )
 
 
 def _citation_to_dict(citation: object) -> dict:

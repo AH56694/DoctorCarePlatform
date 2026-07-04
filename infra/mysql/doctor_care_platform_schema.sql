@@ -355,3 +355,171 @@ CREATE TABLE IF NOT EXISTS admin_logs (
   KEY ix_admin_logs_target (target_type, target_id),
   CONSTRAINT fk_admin_logs_admin_id FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- ---------------------------------------------------------------------------
+-- Python-service legacy/agent tables
+-- These tables keep the migrated Python AI service compatible with its
+-- existing agents while the main platform keeps richer ai_* tables above.
+-- ---------------------------------------------------------------------------
+
+CREATE TABLE IF NOT EXISTS knowledge_doc (
+  id BIGINT PRIMARY KEY,
+  title VARCHAR(255) NOT NULL DEFAULT '',
+  source VARCHAR(500) NOT NULL DEFAULT '',
+  file_name VARCHAR(255) NOT NULL DEFAULT '',
+  file_type VARCHAR(120) NOT NULL DEFAULT '',
+  collection VARCHAR(128) NOT NULL DEFAULT 'medical.symptom_inquiry',
+  category VARCHAR(64) NOT NULL DEFAULT 'medical',
+  subcategory VARCHAR(64) NOT NULL DEFAULT 'symptom_inquiry',
+  metadata_json JSON NULL,
+  create_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  update_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  created_at DATETIME(6) GENERATED ALWAYS AS (create_time) VIRTUAL,
+  updated_at DATETIME(6) GENERATED ALWAYS AS (update_time) VIRTUAL,
+  KEY ix_knowledge_doc_collection (collection),
+  KEY ix_knowledge_doc_category (category),
+  KEY ix_knowledge_doc_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS knowledge_chunk (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  doc_id BIGINT NOT NULL,
+  chunk_index INT NOT NULL DEFAULT 0,
+  chunk_text MEDIUMTEXT NOT NULL,
+  content MEDIUMTEXT NULL,
+  score DECIMAL(8,6) NOT NULL DEFAULT 0.000000,
+  metadata_json JSON NULL,
+  create_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  update_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  created_at DATETIME(6) GENERATED ALWAYS AS (create_time) VIRTUAL,
+  updated_at DATETIME(6) GENERATED ALWAYS AS (update_time) VIRTUAL,
+  UNIQUE KEY uq_knowledge_chunk_doc_index (doc_id, chunk_index),
+  KEY ix_knowledge_chunk_doc_id (doc_id),
+  KEY ix_knowledge_chunk_create_time (create_time),
+  CONSTRAINT fk_knowledge_chunk_doc_id FOREIGN KEY (doc_id) REFERENCES knowledge_doc(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS qa_log (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  userId VARCHAR(64) NOT NULL DEFAULT '',
+  conversation_id VARCHAR(64) NOT NULL DEFAULT '',
+  question TEXT NOT NULL,
+  answer MEDIUMTEXT NULL,
+  intent_category VARCHAR(64) NOT NULL DEFAULT '',
+  intent_subcategory VARCHAR(64) NOT NULL DEFAULT '',
+  cache_hit_level VARCHAR(32) NOT NULL DEFAULT 'miss',
+  create_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  KEY ix_qa_log_userId (userId),
+  KEY ix_qa_log_create_time (create_time),
+  KEY ix_qa_log_intent_category (intent_category)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS qa_unanswered (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  question TEXT NOT NULL,
+  count INT NOT NULL DEFAULT 1,
+  last_seen_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  create_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  KEY ix_qa_unanswered_count (count),
+  KEY ix_qa_unanswered_create_time (create_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS user_memory (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id VARCHAR(64) NOT NULL,
+  memory_key VARCHAR(120) NOT NULL,
+  memory_value JSON NOT NULL,
+  source VARCHAR(64) NOT NULL DEFAULT 'agent',
+  confidence DECIMAL(5,4) NOT NULL DEFAULT 1.0000,
+  create_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  update_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  UNIQUE KEY uq_user_memory_user_key (user_id, memory_key),
+  KEY ix_user_memory_user_id (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS agent_run (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  run_id CHAR(36) NOT NULL,
+  trace_id CHAR(36) NULL,
+  user_id VARCHAR(64) NOT NULL DEFAULT '',
+  task_type VARCHAR(64) NOT NULL DEFAULT '',
+  status VARCHAR(32) NOT NULL DEFAULT 'running',
+  start_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  end_time DATETIME(6) NULL,
+  duration_ms DECIMAL(12,3) NULL,
+  error_message TEXT NULL,
+  metadata_json JSON NULL,
+  UNIQUE KEY uq_agent_run_run_id (run_id),
+  KEY ix_agent_run_status (status),
+  KEY ix_agent_run_start_time (start_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS tool_call (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  tool_call_id CHAR(36) NOT NULL,
+  run_id CHAR(36) NOT NULL,
+  tool_name VARCHAR(120) NOT NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'running',
+  duration_ms DECIMAL(12,3) NULL,
+  error_message TEXT NULL,
+  input_params JSON NULL,
+  output JSON NULL,
+  timestamp DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  UNIQUE KEY uq_tool_call_id (tool_call_id),
+  KEY ix_tool_call_run_id (run_id),
+  KEY ix_tool_call_status (status),
+  KEY ix_tool_call_tool_name (tool_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS doc_view_logs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  doc_id BIGINT NOT NULL,
+  user_id VARCHAR(64) NOT NULL DEFAULT '',
+  create_time DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  KEY ix_doc_view_logs_doc_id (doc_id),
+  KEY ix_doc_view_logs_create_time (create_time),
+  CONSTRAINT fk_doc_view_logs_doc_id FOREIGN KEY (doc_id) REFERENCES knowledge_doc(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE OR REPLACE VIEW knowledge_docs AS
+SELECT
+  id,
+  title,
+  source,
+  file_name,
+  file_type,
+  collection,
+  category,
+  subcategory,
+  metadata_json,
+  create_time,
+  update_time,
+  create_time AS created_at,
+  update_time AS updated_at
+FROM knowledge_doc;
+
+CREATE OR REPLACE VIEW knowledge_chunks AS
+SELECT
+  id,
+  doc_id,
+  chunk_index,
+  COALESCE(content, chunk_text) AS content,
+  chunk_text,
+  score,
+  metadata_json,
+  create_time,
+  update_time,
+  create_time AS created_at,
+  update_time AS updated_at
+FROM knowledge_chunk;
+
+CREATE OR REPLACE VIEW `user` AS
+SELECT
+  id,
+  phone,
+  display_name,
+  status,
+  active_role,
+  created_at,
+  updated_at
+FROM users;

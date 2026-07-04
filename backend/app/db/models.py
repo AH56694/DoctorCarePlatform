@@ -2,7 +2,6 @@
 from uuid import uuid4
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import UserDefinedType
 
@@ -20,15 +19,15 @@ class Vector(UserDefinedType):
 
 
 def uuid_type():
-    return UUID(as_uuid=False).with_variant(String(36), "sqlite")
+    return String(36)
 
 
 def json_type():
-    return JSONB().with_variant(JSON(), "sqlite")
+    return JSON()
 
 
 def vector_type(dimensions: int = 768):
-    return Vector(dimensions).with_variant(JSON(), "sqlite")
+    return JSON()
 
 
 class TimestampMixin:

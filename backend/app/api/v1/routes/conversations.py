@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from backend.app.db.models import Conversation, Message, User
 from backend.app.db.session import get_db
 from backend.app.schemas.conversations import ConversationCreate, ConversationRead, MessageCreate, MessageRead
+from backend.app.services.message_cache import message_cache
 
 router = APIRouter()
 
@@ -120,4 +121,19 @@ async def create_message(
     db.add(message)
     db.commit()
     db.refresh(message)
+    message_cache.add_message(
+        "care",
+        conversation_id,
+        {
+            "id": message.id,
+            "conversation_id": message.conversation_id,
+            "sender_id": message.sender_id,
+            "sender_type": message.sender_type,
+            "body": message.body,
+            "content": message.content,
+            "attachment_url": message.attachment_url,
+            "attachment_type": message.attachment_type,
+            "created_at": message.created_at,
+        },
+    )
     return message

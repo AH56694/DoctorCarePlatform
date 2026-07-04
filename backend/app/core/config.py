@@ -9,7 +9,7 @@ class Settings(BaseSettings):
 
     app_env: str = "development"
     project_name: str = "DoctorCarePlatform"
-    database_url: str = "sqlite+pysqlite:///./local.db"
+    database_url: str = "mysql+pymysql://root:change-me@127.0.0.1:3306/doctor_care_platform?charset=utf8mb4"
     redis_url: str = "redis://127.0.0.1:6379/0"
     rag_service_url: AnyHttpUrl | str = "http://127.0.0.1:8300"
 

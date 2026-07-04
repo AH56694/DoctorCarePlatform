@@ -7,7 +7,7 @@ DoctorCarePlatform is a monorepo scaffold for an AI medical companion and caregi
 - `frontend`: React + TypeScript console
 - `backend`: Main FastAPI business service
 - `python-service`: Core AI/RAG service for intelligent consultation, knowledge retrieval, and knowledge-base ingestion
-- `infra`: Nginx and PostgreSQL initialization files
+- `infra`: Nginx and MySQL initialization files
 
 ## Quick Start
 
@@ -17,12 +17,20 @@ docker compose up --build
 
 Copy `.env.example` to `.env` only when you need to override demo defaults or provide real API keys.
 
-If Docker Hub cannot be reached while building `python:3.11-slim` or `node:22-alpine`, use the local hybrid launcher. It uses the existing local Python/Node environments and starts only Redis/MinIO through Docker:
+If Docker Hub cannot be reached while building `python:3.11-slim` or `node:22-alpine`, use the local hybrid launcher. It uses the existing local Python/Node environments and starts Redis/MinIO/MySQL through Docker:
 
 ```powershell
 .\scripts\install-local.ps1
 .\scripts\start-local.ps1
 ```
+
+Initialize or refresh the local MySQL schema when the MySQL volume already exists:
+
+```powershell
+.\scripts\init-mysql.ps1
+```
+
+The MySQL database is `doctor_care_platform`. It is the single shared data store for both the backend business tables and the Python AI service compatibility tables used by agent tools: `knowledge_doc`, `knowledge_chunk`, `qa_log`, `qa_unanswered`, `user_memory`, `agent_run`, and `tool_call`.
 
 Open:
 
@@ -59,6 +67,7 @@ npm --cache .\.npm-cache run build
 
 Before production use, configure:
 
+- MySQL credentials and backup policy for the shared `doctor_care_platform` database
 - DeepSeek or OpenAI-compatible API key
 - Aliyun SMS signature, template code, and access keys
 - Licensed medical knowledge sources
