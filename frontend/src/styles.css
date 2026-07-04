@@ -36,13 +36,13 @@ button {
   place-items: center;
   padding: 24px;
   background:
-    linear-gradient(135deg, rgba(36, 113, 95, 0.1), rgba(57, 119, 184, 0.08)),
-    #edf4f1;
+    linear-gradient(135deg, rgba(36, 113, 95, 0.12), rgba(57, 119, 184, 0.08)),
+    linear-gradient(180deg, #f7fbf9 0%, #eaf3ef 100%);
 }
 
 .authPanel {
-  width: min(640px, 100%);
-  padding: 30px;
+  width: min(520px, 100%);
+  padding: 32px;
   border: 1px solid #d4e2dc;
   border-radius: 8px;
   background: #ffffff;
@@ -56,6 +56,11 @@ button {
 
 .authBrand span {
   color: #60726c;
+}
+
+.authPanel h1 {
+  margin-bottom: 22px;
+  text-align: center;
 }
 
 .sidebar {
@@ -629,7 +634,189 @@ textarea {
 
 .answerText {
   color: #2d3c37;
-  line-height: 1.7;
+  line-height: 1.72;
+}
+
+.answerText p,
+.answerText ul,
+.answerText ol {
+  margin: 0 0 12px;
+}
+
+.answerText ul,
+.answerText ol {
+  padding-left: 22px;
+}
+
+.answerText li + li {
+  margin-top: 6px;
+}
+
+.streamProcess {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.processHeader,
+.reportHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.processHeader {
+  color: #24483f;
+}
+
+.processHeader span {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.processHeader svg {
+  color: #24715f;
+}
+
+.collapsiblePanel {
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  padding: 0;
+  background: #f8fbfa;
+  overflow: hidden;
+}
+
+.collapsiblePanel summary {
+  min-height: 46px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  color: #24483f;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.collapsiblePanel summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapsiblePanel summary > span {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.collapsiblePanel summary small {
+  color: #697973;
+  font-weight: 700;
+}
+
+.collapsiblePanel summary > svg:last-child {
+  color: #60726c;
+  flex: 0 0 auto;
+  transition: transform 0.18s ease;
+}
+
+.collapsiblePanel[open] summary > svg:last-child {
+  transform: rotate(180deg);
+}
+
+.collapsiblePanel[open] {
+  padding-bottom: 12px;
+}
+
+.collapsiblePanel[open] summary {
+  margin-bottom: 10px;
+  border-bottom: 1px solid #e1ebe7;
+  background: #ffffff;
+}
+
+.collapsiblePanel > :not(summary) {
+  margin-left: 14px;
+  margin-right: 14px;
+}
+
+.processTimeline {
+  display: grid;
+  gap: 8px;
+}
+
+.processEvent {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+}
+
+.processEvent > span {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  color: #1f705d;
+  background: #e8f4ef;
+}
+
+.processEvent.tool > span {
+  color: #2e5f9f;
+  background: #e8f0fb;
+}
+
+.processEvent.sources > span {
+  color: #8a651f;
+  background: #fff4d8;
+}
+
+.processEvent.error > span {
+  color: #a33b3b;
+  background: #fdeaea;
+}
+
+.processEvent strong,
+.processEvent small {
+  display: block;
+}
+
+.processEvent small {
+  margin-top: 2px;
+  color: #60726c;
+  line-height: 1.45;
+}
+
+.answerReport {
+  margin-bottom: 16px;
+  padding: 16px;
+  border: 1px solid #cfe0da;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.reportHeader {
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e1ebe7;
+}
+
+.reportHeader span,
+.reportHeader strong {
+  display: block;
+}
+
+.reportHeader span {
+  margin-bottom: 2px;
+  color: #60726c;
+  font-size: 12px;
+}
+
+.reportHeader strong {
+  color: #1e4138;
 }
 
 .intentGrid {
@@ -656,6 +843,31 @@ textarea {
   font-size: 12px;
 }
 
+.toolCallList,
+.citationList {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 16px;
+}
+
+.toolCallList div {
+  padding: 12px;
+  border-left: 3px solid #3977b8;
+  border-radius: 6px;
+  background: #f5f9fe;
+}
+
+.toolCallList strong,
+.toolCallList span {
+  display: block;
+}
+
+.toolCallList span {
+  margin-top: 4px;
+  color: #5c6e68;
+  line-height: 1.5;
+}
+
 .citationList div {
   padding: 12px;
   border-left: 3px solid #24715f;
@@ -664,14 +876,29 @@ textarea {
 }
 
 .citationList strong,
-.citationList span {
+.citationList span,
+.citationList small {
   display: block;
+}
+
+.citationList small {
+  margin-top: 3px;
+  color: #7a8a84;
+  font-size: 12px;
 }
 
 .citationList span {
   margin-top: 4px;
   color: #5c6e68;
   line-height: 1.5;
+}
+
+.citationList a {
+  display: inline-block;
+  margin-top: 8px;
+  color: #1f705d;
+  font-weight: 700;
+  text-decoration: none;
 }
 
 .emptyState {
@@ -1086,29 +1313,23 @@ textarea {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.authQuickHints {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-  margin: 16px 0 18px;
+.authForm .accountField {
+  display: block;
 }
 
-.authQuickHints div {
-  min-height: 48px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid #d7e4df;
-  border-radius: 8px;
-  padding: 10px 12px;
-  color: #24483f;
-  background: #f8fbfa;
-  font-weight: 700;
+.authSwitchText {
+  margin: 14px 0 0;
+  color: #697973;
+  font-size: 13px;
+  text-align: center;
 }
 
-.authQuickHints svg {
-  color: #24715f;
-  flex: 0 0 auto;
+.authSwitchText button {
+  border: 0;
+  padding: 0;
+  color: #1f705d;
+  background: transparent;
+  font-weight: 800;
 }
 
 .rememberedLogin {
@@ -1416,7 +1637,6 @@ textarea {
   .collectionGrid,
   .adminMetricGrid,
   .caregiverGrid,
-  .authQuickHints,
   .formGrid,
   .inviteForm,
   .profileSearch,

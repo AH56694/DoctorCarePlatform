@@ -64,7 +64,6 @@ function Wait-Http($name, $url, $timeoutSeconds, $logPath) {
 }
 
 Assert-PathExists (Join-Path $root ".venv\Scripts\python.exe") "Root Python virtual environment is missing. Create it and install requirements.txt first."
-Assert-PathExists (Join-Path $pythonService ".venv\Scripts\python.exe") "python-service virtual environment is missing."
 Assert-PathExists (Join-Path $frontend "node_modules") "frontend node_modules is missing. Run npm install in frontend first."
 
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
@@ -84,6 +83,7 @@ if (-not $SkipInfra) {
 $ragLog = Join-Path $logsDir "rag-service.log"
 $backendLog = Join-Path $logsDir "backend.log"
 $frontendLog = Join-Path $logsDir "frontend.log"
+$rootPython = Join-Path $root ".venv\Scripts\python.exe"
 
 $ragCommand = @"
 `$env:PYTHONIOENCODING='utf-8';
@@ -94,7 +94,7 @@ $ragCommand = @"
 `$env:VECTOR_STORE_COLLECTION_NAME='doctorcare_medical_knowledge';
 `$env:REDIS_HOST='127.0.0.1';
 `$env:REDIS_PORT='6379';
-.\.venv\Scripts\python.exe -m uvicorn main:app --reload --host 127.0.0.1 --port 8300
+& '$rootPython' -m uvicorn main:app --reload --host 127.0.0.1 --port 8300
 "@
 
 $backendCommand = @"
@@ -104,6 +104,37 @@ $backendCommand = @"
 `$env:REDIS_URL='redis://127.0.0.1:6379/0';
 .\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 "@
+
+$pythonServiceModuleCheck = @"
+import importlib
+modules = [
+    "fastapi",
+    "langchain_core",
+    "langchain_text_splitters",
+    "sentence_transformers",
+    "faiss",
+    "dashscope",
+    "docx",
+    "pytesseract",
+    "mysql.connector",
+]
+missing = []
+for module in modules:
+    try:
+        importlib.import_module(module)
+    except Exception:
+        missing.append(module)
+if missing:
+    raise SystemExit("Missing python-service dependencies: " + ", ".join(missing))
+"@
+
+try {
+  $pythonServiceModuleCheck | & $rootPython -
+} catch {
+  Write-Host "python-service dependencies are not installed in the root .venv."
+  Write-Host "Run: .\scripts\install-local.ps1"
+  throw
+}
 
 $frontendCommand = "npm run dev -- --host 127.0.0.1"
 

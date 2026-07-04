@@ -20,6 +20,7 @@ Copy `.env.example` to `.env` only when you need to override demo defaults or pr
 If Docker Hub cannot be reached while building `python:3.11-slim` or `node:22-alpine`, use the local hybrid launcher. It uses the existing local Python/Node environments and starts only Redis/MinIO through Docker:
 
 ```powershell
+.\scripts\install-local.ps1
 .\scripts\start-local.ps1
 ```
 
@@ -40,7 +41,7 @@ Manual local development:
 ```powershell
 uvicorn backend.app.main:app --reload --port 8000
 cd python-service
-.\.venv\Scripts\python.exe -m uvicorn main:app --reload --port 8300
+..\.venv\Scripts\python.exe -m uvicorn main:app --reload --port 8300
 cd frontend
 npm install --cache .\.npm-cache
 npm --cache .\.npm-cache run dev

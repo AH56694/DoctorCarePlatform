@@ -11,6 +11,7 @@ class AiChatRequest(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
     user_id: str | None = None
+    is_admin: bool = False
     attachments: list[AiAttachment] = Field(default_factory=list)
 
 
@@ -25,3 +26,9 @@ class AiChatResponse(BaseModel):
     intent: IntentResult
     cache_hit_level: str = "miss"
     citations: list[dict] = Field(default_factory=list)
+    task_type: str = "knowledge_qa"
+    run_id: str | None = None
+    trace_id: str | None = None
+    steps: list[dict] = Field(default_factory=list)
+    tool_calls: list[dict] = Field(default_factory=list)
+    intermediate_conclusions: list[dict] = Field(default_factory=list)

@@ -9,6 +9,7 @@ import {
   BriefcaseMedical,
   CalendarClock,
   CheckCircle2,
+  ChevronDown,
   ClipboardList,
   Database,
   FileHeart,
@@ -28,7 +29,8 @@ import {
   Stethoscope,
   Trash2,
   UploadCloud,
-  UserCheck
+  UserCheck,
+  UserPlus
 } from "lucide-react";
 import "./styles.css";
 
@@ -49,7 +51,21 @@ type ChatResponse = {
     confidence: number;
   };
   cache_hit_level: string;
-  citations: Array<{ title: string; snippet: string; source_url?: string }>;
+  citations: Array<{ title: string; snippet: string; source_url?: string; page?: string | number; chunk_index?: string | number }>;
+  task_type?: string;
+  run_id?: string | null;
+  trace_id?: string | null;
+  steps?: Array<Record<string, unknown>>;
+  tool_calls?: Array<Record<string, unknown>>;
+  intermediate_conclusions?: Array<Record<string, unknown>>;
+};
+
+type StreamProcessEvent = {
+  id: string;
+  type: "status" | "tool" | "sources" | "error";
+  label: string;
+  detail: string;
+  status?: string;
 };
 
 type JobPosting = {
@@ -515,6 +531,10 @@ function roleLabel(role: RoleName) {
 
 function statusLabel(status: string | undefined | null) {
   const labels: Record<string, string> = {
+    completed: "已完成",
+    success: "成功",
+    running: "运行中",
+    failed: "失败",
     active: "正常",
     disabled: "禁用",
     suspended: "暂停",
@@ -528,7 +548,6 @@ function statusLabel(status: string | undefined | null) {
     closed: "已关闭",
     cancelled: "已取消",
     indexed: "已入库",
-    failed: "入库失败",
     draft: "草稿",
     public: "公开",
     private: "私密",
@@ -591,7 +610,7 @@ function saveRememberedAccount(account: AccountRead) {
 }
 
 function AuthGate({ onAuthenticated }: { onAuthenticated: (account: AccountRead) => void }) {
-  const [authMode, setAuthMode] = useState<"register" | "login">("register");
+  const [authMode, setAuthMode] = useState<"register" | "login">("login");
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
   const [rememberAccount, setRememberAccount] = useState(true);
@@ -618,24 +637,14 @@ function AuthGate({ onAuthenticated }: { onAuthenticated: (account: AccountRead)
     return response.json() as Promise<T>;
   }
 
-  function selectRememberedAccount(phone: string) {
+  function handleAccountInput(phone: string) {
     const remembered = rememberedAccounts.find((item) => item.phone === phone);
-    if (!remembered) {
-      return;
-    }
-    setAuthMode("login");
     setAuthForm((current) => ({
       ...current,
-      phone: remembered.phone,
-      display_name: remembered.display_name || current.display_name
+      phone,
+      display_name: authMode === "login" && remembered ? remembered.display_name || current.display_name : current.display_name
     }));
     setNotice("");
-  }
-
-  function clearRememberedAccounts() {
-    localStorage.removeItem(rememberedAccountsKey);
-    setRememberedAccounts([]);
-    setNotice("已清除本机记住的账号。");
   }
 
   async function submitAuth() {
@@ -651,7 +660,7 @@ function AuthGate({ onAuthenticated }: { onAuthenticated: (account: AccountRead)
         method: "POST",
         body: JSON.stringify(payload)
       });
-      if (rememberAccount) {
+      if (authMode === "login" && rememberAccount) {
         saveRememberedAccount(result.account);
         setRememberedAccounts(loadRememberedAccounts());
       }
@@ -675,51 +684,22 @@ function AuthGate({ onAuthenticated }: { onAuthenticated: (account: AccountRead)
             <span>医护陪护服务平台</span>
           </div>
         </div>
-        <h1>请先注册或登录</h1>
-        <p className="mutedText">病人和护理方进入后只显示自己的业务与审核状态；管理员账号可进入审核管理和知识库。</p>
-        <div className="authQuickHints">
-          <div>
-            <ShieldCheck size={18} />
-            <span>身份分流</span>
-          </div>
-          <div>
-            <Stethoscope size={18} />
-            <span>问诊与护理</span>
-          </div>
-          <div>
-            <MessageSquareText size={18} />
-            <span>沟通协作</span>
-          </div>
-        </div>
+        <h1>{authMode === "login" ? "登录平台" : "注册账号"}</h1>
         {notice && <p className="notice">{notice}</p>}
-        <div className="segmentedControl" aria-label="账户模式">
-          <button className={authMode === "register" ? "active" : ""} onClick={() => setAuthMode("register")} type="button">
-            注册
-          </button>
-          <button className={authMode === "login" ? "active" : ""} onClick={() => setAuthMode("login")} type="button">
-            登录
-          </button>
-        </div>
-        {rememberedAccounts.length > 0 && (
-          <div className="rememberedLogin">
-            <label className="fieldLabel" htmlFor="rememberedAccount">选择已记住账号</label>
-            <div className="savedAccountRow">
-              <select id="rememberedAccount" defaultValue="" onChange={(event) => selectRememberedAccount(event.target.value)}>
-                <option value="">从本机账号列表中选择</option>
-                {rememberedAccounts.map((item) => (
-                  <option key={item.phone} value={item.phone}>
-                    {item.display_name}（{item.phone}）
-                  </option>
-                ))}
-              </select>
-              <button className="secondaryButton compactButton" onClick={clearRememberedAccounts} type="button">
-                清除记录
-              </button>
-            </div>
-          </div>
-        )}
         <div className="formGrid authForm">
-          <input placeholder="手机号/账号" value={authForm.phone} onChange={(event) => setAuthForm({ ...authForm, phone: event.target.value })} />
+          <div className="accountField">
+            <input
+              list="rememberedAccountOptions"
+              placeholder="手机号/账号"
+              value={authForm.phone}
+              onChange={(event) => handleAccountInput(event.target.value)}
+            />
+            <datalist id="rememberedAccountOptions">
+              {rememberedAccounts.map((item) => (
+                <option key={item.phone} label={item.display_name} value={item.phone} />
+              ))}
+            </datalist>
+          </div>
           <input placeholder="密码" type="password" value={authForm.password} onChange={(event) => setAuthForm({ ...authForm, password: event.target.value })} />
           {authMode === "register" && (
             <>
@@ -731,14 +711,28 @@ function AuthGate({ onAuthenticated }: { onAuthenticated: (account: AccountRead)
             </>
           )}
         </div>
-        <label className="checkLine rememberLine">
-          <input checked={rememberAccount} onChange={(event) => setRememberAccount(event.target.checked)} type="checkbox" />
-          <span>记住账号，下次可从下拉列表快速选择</span>
-        </label>
+        {authMode === "login" && (
+          <label className="checkLine rememberLine">
+            <input checked={rememberAccount} onChange={(event) => setRememberAccount(event.target.checked)} type="checkbox" />
+            <span>记住账号，下次可从下拉列表快速选择</span>
+          </label>
+        )}
         <button className="primaryButton" disabled={loading || !authForm.phone.trim() || !authForm.password.trim()} onClick={submitAuth} type="button">
-          {loading ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+          {loading ? <Loader2 className="spin" size={18} /> : authMode === "register" ? <UserPlus size={18} /> : <Send size={18} />}
           <span>{authMode === "register" ? "创建账号并进入" : "登录系统"}</span>
         </button>
+        <p className="authSwitchText">
+          {authMode === "login" ? "还没有账号，" : "已有账号，"}
+          <button
+            onClick={() => {
+              setAuthMode(authMode === "login" ? "register" : "login");
+              setNotice("");
+            }}
+            type="button"
+          >
+            {authMode === "login" ? "现在去注册" : "返回登录"}
+          </button>
+        </p>
       </section>
     </main>
   );
@@ -1208,14 +1202,25 @@ function Consultation() {
   const [message, setMessage] = useState("老人术后夜间疼痛明显，当前用药说明和护理记录见附件，请帮我判断需要重点观察什么。");
   const [attachments, setAttachments] = useState<AiAttachment[]>([]);
   const [response, setResponse] = useState<ChatResponse | null>(null);
+  const [processEvents, setProcessEvents] = useState<StreamProcessEvent[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
   async function submitConsultation() {
     setLoading(true);
     setError("");
+    setProcessEvents([]);
+    setResponse({
+      answer: "",
+      intent: { category: "medical_consult", subcategory: "streaming", confidence: 0 },
+      cache_hit_level: "streaming",
+      citations: [],
+      tool_calls: [],
+      steps: [],
+      intermediate_conclusions: []
+    });
     try {
-      const result = await fetch("/api/v1/ai/chat", {
+      const result = await fetch("/api/v1/ai/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message, attachments })
@@ -1223,7 +1228,10 @@ function Consultation() {
       if (!result.ok) {
         throw new Error(`接口返回 ${result.status}`);
       }
-      setResponse(await result.json());
+      if (!result.body) {
+        throw new Error("浏览器不支持流式响应。");
+      }
+      await consumeConsultationStream(result.body);
     } catch {
       setResponse({
         answer:
@@ -1237,10 +1245,118 @@ function Consultation() {
           }
         ]
       });
+      setProcessEvents([
+        {
+          id: "demo-status",
+          type: "status",
+          label: "演示模式",
+          detail: "未连接到后端流式接口，显示内置示例。",
+          status: "completed"
+        }
+      ]);
       setError("由于接口暂不可达，当前显示内置演示回复。");
     } finally {
       setLoading(false);
     }
+  }
+
+  async function consumeConsultationStream(body: ReadableStream<Uint8Array>) {
+    const reader = body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        break;
+      }
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split("\n\n");
+      buffer = events.pop() || "";
+      events.forEach(handleStreamChunk);
+    }
+
+    if (buffer.trim()) {
+      handleStreamChunk(buffer);
+    }
+  }
+
+  function handleStreamChunk(rawEvent: string) {
+    const payload = parseSsePayload(rawEvent);
+    if (!payload) {
+      return;
+    }
+    const type = String(payload.type || "");
+    if (type === "token") {
+      const content = String(payload.content || "");
+      setResponse((current) => ({
+        ...(current || {
+          intent: { category: "medical_consult", subcategory: "streaming", confidence: 0 },
+          cache_hit_level: "streaming",
+          citations: []
+        }),
+        answer: `${current?.answer || ""}${content}`
+      }));
+    } else if (type === "status") {
+      appendProcessEvent({
+        type: "status",
+        label: String(payload.label || "正在处理"),
+        detail: String(payload.detail || ""),
+        status: "completed"
+      });
+    } else if (type === "tool") {
+      const toolCall = asRecord(payload.tool_call);
+      const toolName = String(toolCall.tool_name || "tool");
+      appendProcessEvent({
+        type: "tool",
+        label: toolLabel(toolName),
+        detail: summarizeToolCall(toolCall),
+        status: String(toolCall.status || "completed")
+      });
+      setResponse((current) => ({
+        ...(current || emptyStreamingResponse()),
+        tool_calls: [...(current?.tool_calls || []), toolCall]
+      }));
+    } else if (type === "sources") {
+      const sources = Array.isArray(payload.sources) ? payload.sources as ChatResponse["citations"] : [];
+      appendProcessEvent({
+        type: "sources",
+        label: "已找到参考来源",
+        detail: sources.length ? `${sources.length} 条知识库片段可用于回答` : "未检索到明确来源",
+        status: "completed"
+      });
+      setResponse((current) => ({
+        ...(current || emptyStreamingResponse()),
+        citations: sources
+      }));
+    } else if (type === "final") {
+      const finalResponse = payload.response as ChatResponse | undefined;
+      if (finalResponse) {
+        setResponse(finalResponse);
+      }
+    } else if (type === "error") {
+      const message = String(payload.message || "流式问诊失败。");
+      setError(message);
+      appendProcessEvent({ type: "error", label: "问诊失败", detail: message, status: "failed" });
+    }
+  }
+
+  function appendProcessEvent(event: Omit<StreamProcessEvent, "id">) {
+    setProcessEvents((current) => [
+      ...current,
+      {
+        ...event,
+        id: typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${event.type}-${Date.now()}-${Math.random()}`
+      }
+    ].filter((item, index, items) => {
+      if (index === 0) {
+        return true;
+      }
+      const previous = items[index - 1];
+      return item.type !== previous.type || item.label !== previous.label || item.detail !== previous.detail;
+    }).slice(-12));
   }
 
   const confidencePercent = useMemo(
@@ -1335,7 +1451,48 @@ function Consultation() {
         </div>
         {response ? (
           <>
-            <p className="answerText">{response.answer}</p>
+            <details className="collapsiblePanel streamProcess" open={loading}>
+              <summary className="processHeader">
+                <span>
+                  <Sparkles size={18} />
+                  <strong>{loading ? "AI 正在思考" : "处理过程"}</strong>
+                </span>
+                <ChevronDown size={18} />
+              </summary>
+              <div className="processTimeline">
+                {processEvents.length ? (
+                  processEvents.map((event) => (
+                    <div className={`processEvent ${event.type}`} key={event.id}>
+                      <span>{event.type === "tool" ? <Database size={15} /> : event.type === "sources" ? <Search size={15} /> : <CheckCircle2 size={15} />}</span>
+                      <div>
+                        <strong>{event.label}</strong>
+                        {event.detail && <small>{event.detail}</small>}
+                      </div>
+                    </div>
+                  ))
+                ) : (
+                  <div className="processEvent">
+                    <span>{loading ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}</span>
+                    <div>
+                      <strong>{loading ? "等待模型返回首个片段" : "尚未产生处理事件"}</strong>
+                      <small>提交问诊后会实时显示检索、工具调用和生成状态。</small>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </details>
+
+            <div className="answerReport">
+              <div className="reportHeader">
+                <div>
+                  <span>问诊生成结果</span>
+                  <strong>{loading ? "正在生成..." : "已生成"}</strong>
+                </div>
+                {loading && <Loader2 className="spin" size={18} />}
+              </div>
+              <FormattedAnswer text={response.answer} loading={loading} />
+            </div>
+
             <div className="intentGrid">
               <div>
                 <span>意图分类</span>
@@ -1354,14 +1511,49 @@ function Consultation() {
                 <strong>{response.cache_hit_level}</strong>
               </div>
             </div>
-            <div className="citationList">
-              {response.citations.map((citation) => (
-                <div key={`${citation.title}-${citation.snippet}`}>
-                  <strong>{citation.title || "参考内容"}</strong>
-                  <span>{citation.snippet}</span>
+            {!!response.tool_calls?.length && (
+              <details className="collapsiblePanel toolCallList">
+                <summary>
+                  <span>
+                    <Database size={17} />
+                    <strong>工具调用明细</strong>
+                  </span>
+                  <ChevronDown size={18} />
+                </summary>
+                {response.tool_calls.map((toolCall, index) => (
+                  <div key={`${String(toolCall.tool_name || "tool")}-${index}`}>
+                    <strong>{toolLabel(String(toolCall.tool_name || "tool"))}</strong>
+                    <span>{summarizeToolCall(toolCall)}</span>
+                  </div>
+                ))}
+              </details>
+            )}
+            <details className="collapsiblePanel citationList">
+              <summary>
+                <span>
+                  <BookOpenCheck size={17} />
+                  <strong>参考来源</strong>
+                  <small>{response.citations.length ? `${response.citations.length} 条` : "暂无"}</small>
+                </span>
+                <ChevronDown size={18} />
+              </summary>
+              {response.citations.length ? response.citations.map((citation, index) => (
+                <div key={`${citation.title || "source"}-${index}`}>
+                  <strong>{citation.title || `知识库片段 ${index + 1}`}</strong>
+                  {(citation.page || citation.chunk_index !== undefined) && (
+                    <small>
+                      {citation.page ? `第 ${citation.page} 页` : ""}
+                      {citation.page && citation.chunk_index !== undefined ? " / " : ""}
+                      {citation.chunk_index !== undefined ? `片段 ${citation.chunk_index}` : ""}
+                    </small>
+                  )}
+                  <span>{citation.snippet || "该来源未提供摘要。"}</span>
+                  {citation.source_url && <a href={citation.source_url} rel="noreferrer" target="_blank">查看来源</a>}
                 </div>
-              ))}
-            </div>
+              )) : (
+                <p className="mutedText">本次回答暂未返回明确文件来源。</p>
+              )}
+            </details>
           </>
         ) : (
           <div className="emptyState">
@@ -1372,6 +1564,93 @@ function Consultation() {
       </article>
     </section>
   );
+}
+
+function emptyStreamingResponse(): ChatResponse {
+  return {
+    answer: "",
+    intent: { category: "medical_consult", subcategory: "streaming", confidence: 0 },
+    cache_hit_level: "streaming",
+    citations: [],
+    tool_calls: [],
+    steps: [],
+    intermediate_conclusions: []
+  };
+}
+
+function parseSsePayload(rawEvent: string): Record<string, unknown> | null {
+  const data = rawEvent
+    .split("\n")
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.replace(/^data:\s?/, ""))
+    .join("\n")
+    .trim();
+  if (!data) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(data);
+    return asRecord(parsed);
+  } catch {
+    return null;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function FormattedAnswer({ text, loading }: { text: string; loading: boolean }) {
+  const blocks = text.trim().split(/\n{2,}/).map((block) => block.trim()).filter(Boolean);
+  if (!blocks.length) {
+    return <p className="answerText mutedText">{loading ? "正在组织问诊回复..." : "暂无回答内容。"}</p>;
+  }
+  return (
+    <div className="answerText">
+      {blocks.map((block, index) => {
+        const lines = block.split("\n").map((line) => line.trim()).filter(Boolean);
+        const isBulletList = lines.length > 1 && lines.every((line) => /^[-*•]/.test(line));
+        const isNumberedList = lines.length > 1 && lines.every((line) => /^\d+[.、]/.test(line));
+        if (isBulletList) {
+          return (
+            <ul key={`${block}-${index}`}>
+              {lines.map((line, lineIndex) => <li key={`${line}-${lineIndex}`}>{line.replace(/^[-*•]\s*/, "")}</li>)}
+            </ul>
+          );
+        }
+        if (isNumberedList) {
+          return (
+            <ol key={`${block}-${index}`}>
+              {lines.map((line, lineIndex) => <li key={`${line}-${lineIndex}`}>{line.replace(/^\d+[.、]\s*/, "")}</li>)}
+            </ol>
+          );
+        }
+        return <p key={`${block}-${index}`}>{block}</p>;
+      })}
+    </div>
+  );
+}
+
+function toolLabel(toolName: string) {
+  const labels: Record<string, string> = {
+    question_rewrite: "问题改写",
+    knowledge_search: "知识库检索",
+    rerank: "证据重排",
+    conversation_memory_read: "读取对话记忆",
+    conversation_memory_write: "写入对话记忆",
+    doc_summary: "文档摘要",
+    ocr_extract: "OCR 识别",
+    answer_generation: "生成回答"
+  };
+  return labels[toolName] || toolName.replaceAll("_", " ");
+}
+
+function summarizeToolCall(toolCall: Record<string, unknown>) {
+  const status = String(toolCall.status || "completed");
+  const duration = typeof toolCall.duration_ms === "number" ? `，耗时 ${Math.round(toolCall.duration_ms)}ms` : "";
+  const output = asRecord(toolCall.output);
+  const count = Array.isArray(output.results) ? `，返回 ${output.results.length} 条结果` : "";
+  return `${statusLabel(status)}${count}${duration}`;
 }
 
 function Jobs({ account, onOpenChat }: { account: AccountRead; onOpenChat: () => void }) {

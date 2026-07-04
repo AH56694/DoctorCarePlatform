@@ -36,6 +36,7 @@ services:
       dockerfile: python-service/Dockerfile
     environment:
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-qwen-plus}
       EMBEDDING_MODEL: ${PYTHON_SERVICE_EMBEDDING_MODEL:-local}
       LOCAL_EMBEDDING_MODEL_PATH: ${LOCAL_EMBEDDING_MODEL_PATH:-/app/models/bge-small-zh-v1.5}
       USE_MILVUS: ${USE_MILVUS:-false}
