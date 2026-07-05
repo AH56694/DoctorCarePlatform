@@ -110,7 +110,11 @@ async def ingest_knowledge(payload: KnowledgeIngestRequest) -> KnowledgeIngestRe
         mysql_client.insert_chunks(
             payload.doc_id,
             [
-                {"page_content": chunk.page_content, "chunk_index": chunk.metadata.get("chunk_index", index)}
+                {
+                    "page_content": chunk.page_content,
+                    "chunk_index": chunk.metadata.get("chunk_index", index),
+                    "metadata": chunk.metadata,
+                }
                 for index, chunk in enumerate(chunks)
             ],
         )

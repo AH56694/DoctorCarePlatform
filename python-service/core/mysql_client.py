@@ -13,7 +13,7 @@ class MySQLClient:  # 定义 MySQL 客户端类，封装数据库操作
     def __init__(self):  # 构造方法，初始化数据库连接参数
         self.host = os.getenv("MYSQL_HOST", "localhost")  # MySQL 主机地址
         self.port = int(os.getenv("MYSQL_PORT", "3306"))  # MySQL 端口，int() 转为整数
-        self.database = os.getenv("MYSQL_DATABASE", "ai_knowledge_db")  # 数据库名
+        self.database = os.getenv("MYSQL_DATABASE", "doctor_care_platform")  # 数据库名
         self.username = os.getenv("MYSQL_USERNAME", "root")  # 用户名
         self.password = os.getenv("MYSQL_PASSWORD", "change-me")  # 密码
         self.connection = None  # 数据库连接对象，初始为 None（类似 Java 的 null）
@@ -46,6 +46,38 @@ class MySQLClient:  # 定义 MySQL 客户端类，封装数据库操作
             self.connection.close()  # 关闭连接
             logger.info("MySQL connection closed")  # 记录关闭日志
 
+    def _get_writable_columns(self, cursor, table_name: str) -> Dict[str, Dict[str, Any]]:
+        cursor.execute(f"SHOW FULL COLUMNS FROM `{table_name}`")
+        columns: Dict[str, Dict[str, Any]] = {}
+        for row in cursor.fetchall():
+            field = row[0]
+            extra = str(row[6] or "").lower() if len(row) > 6 else ""
+            if "virtual generated" not in extra and "stored generated" not in extra:
+                columns[field] = {"extra": extra}
+        return columns
+
+    def _timestamp_columns(self, columns: Dict[str, Dict[str, Any]], names: List[str]) -> List[str]:
+        return [name for name in names if name in columns]
+
+    def _build_insert_sql(
+        self,
+        table_name: str,
+        value_columns: List[str],
+        timestamp_columns: List[str],
+        update_columns: List[str] | None = None,
+        update_timestamp_columns: List[str] | None = None,
+    ) -> str:
+        columns = value_columns + timestamp_columns
+        value_placeholders = ["%s"] * len(value_columns) + ["CURRENT_TIMESTAMP(6)"] * len(timestamp_columns)
+        quoted_columns = ", ".join(f"`{column}`" for column in columns)
+        sql = f"INSERT INTO `{table_name}` ({quoted_columns}) VALUES ({', '.join(value_placeholders)})"
+
+        assignments = [f"`{column}` = VALUES(`{column}`)" for column in update_columns or []]
+        assignments.extend(f"`{column}` = CURRENT_TIMESTAMP(6)" for column in update_timestamp_columns or [])
+        if assignments:
+            sql = f"{sql} ON DUPLICATE KEY UPDATE {', '.join(assignments)}"
+        return sql
+
     def insert_chunks(self, doc_id: int, chunks: List[Dict[str, Any]]):  # 定义批量插入文本块的方法，参数类型提示：doc_id 整数，chunks 是字典列表
         """批量插入 chunks 到 knowledge_chunk 表"""  # 方法的 docstring
         if not chunks:  # 如果 chunks 为空列表（空列表在 Python 中为 False）
@@ -57,18 +89,74 @@ class MySQLClient:  # 定义 MySQL 客户端类，封装数据库操作
         try:
             cursor = self.connection.cursor()  # 创建游标
 
+            doc_columns = self._get_writable_columns(cursor, "knowledge_doc")
+            chunk_columns = self._get_writable_columns(cursor, "knowledge_chunk")
+            metadata = chunks[0].get("metadata", {}) if chunks else {}
+            doc_value_columns = [
+                column
+                for column in [
+                    "id",
+                    "title",
+                    "source",
+                    "file_name",
+                    "file_type",
+                    "collection",
+                    "category",
+                    "subcategory",
+                    "metadata_json",
+                ]
+                if column in doc_columns
+            ]
+            doc_timestamp_columns = self._timestamp_columns(doc_columns, ["create_time", "update_time", "created_at", "updated_at"])
+            doc_update_columns = [column for column in doc_value_columns if column != "id"]
+            doc_update_timestamp_columns = self._timestamp_columns(doc_columns, ["update_time", "updated_at"])
+            upsert_doc_sql = self._build_insert_sql(
+                "knowledge_doc",
+                doc_value_columns,
+                doc_timestamp_columns,
+                doc_update_columns,
+                doc_update_timestamp_columns,
+            )
+            doc_values = {
+                "id": doc_id,
+                "title": metadata.get("title", "") or metadata.get("file_name", "") or str(doc_id),
+                "source": metadata.get("source", "") or metadata.get("file_name", ""),
+                "file_name": metadata.get("file_name", ""),
+                "file_type": metadata.get("file_type", ""),
+                "collection": metadata.get("collection", "medical.symptom_inquiry"),
+                "category": metadata.get("category", "medical"),
+                "subcategory": metadata.get("subcategory", "symptom_inquiry"),
+                "metadata_json": json.dumps(metadata, ensure_ascii=False),
+            }
+            cursor.execute(
+                upsert_doc_sql,
+                tuple(doc_values[column] for column in doc_value_columns),
+            )
+
             # 先删除该文档已有的 chunks（避免重复）
             delete_sql = "DELETE FROM knowledge_chunk WHERE doc_id = %s"  # SQL 删除语句，%s 是参数占位符（类似 JDBC 的 ?）
             cursor.execute(delete_sql, (doc_id,))  # 执行删除，(doc_id,) 是单元素元组（注意逗号不能少，否则会被当作括号表达式）
 
             # 批量插入新 chunks
-            insert_sql = """  # SQL 插入语句（多行字符串，用三引号包围）
-                INSERT INTO knowledge_chunk (doc_id, chunk_index, chunk_text, create_time)
-                VALUES (%s, %s, %s, NOW())
-            """
+            chunk_value_columns = [
+                column
+                for column in ["doc_id", "chunk_index", "chunk_text", "content", "metadata_json"]
+                if column in chunk_columns
+            ]
+            chunk_timestamp_columns = self._timestamp_columns(chunk_columns, ["create_time", "update_time", "created_at", "updated_at"])
+            insert_sql = self._build_insert_sql("knowledge_chunk", chunk_value_columns, chunk_timestamp_columns)
 
             data = [  # 准备批量插入的数据
-                (doc_id, chunk.get('chunk_index', i), chunk.get('page_content', ''),)  # chunk.get 类似 Java Map 的 getOrDefault，取 key 不存在时返回默认值
+                tuple(
+                    {
+                        "doc_id": doc_id,
+                        "chunk_index": chunk.get('chunk_index', i),
+                        "chunk_text": chunk.get('page_content', '') or chunk.get('content', ''),
+                        "content": chunk.get('page_content', '') or chunk.get('content', ''),
+                        "metadata_json": json.dumps(chunk.get('metadata', {}), ensure_ascii=False),
+                    }[column]
+                    for column in chunk_value_columns
+                )  # chunk.get 类似 Java Map 的 getOrDefault，取 key 不存在时返回默认值
                 for i, chunk in enumerate(chunks)  # enumerate 同时获取索引和元素（类似 Java 的 for i=0; i<list.size(); i++）
             ]
 
@@ -197,7 +285,7 @@ class UserMemoryClient:  # 定义用户记忆客户端类，使用连接池管�
                 port=int(os.getenv("MYSQL_PORT", "3306")),  # MySQL 端口
                 user=os.getenv("MYSQL_USERNAME", "root"),  # 用户名
                 password=os.getenv("MYSQL_PASSWORD", "change-me"),  # 密码
-                database=os.getenv("MYSQL_DATABASE", "ai_knowledge_db"),  # 数据库名
+                database=os.getenv("MYSQL_DATABASE", "doctor_care_platform"),  # 数据库名
                 charset="utf8mb4",  # 字符集
                 autocommit=True  # 自动提交事务（每个 SQL 语句自动 commit）
             )

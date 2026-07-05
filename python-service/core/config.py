@@ -1,6 +1,7 @@
 import os  # 导入 os 模块，用于访问操作系统功能（如读取环境变量、创建目录等）
 import logging  # 导入 logging 模块，用于记录日志信息（类似 Java 中的 Log4j/SLF4J）
 from typing import Dict, Any  # 从 typing 模块导入类型提示，Dict 相当于 Java 的 Map<String, Object>，Any 相当于 Java 的 Object
+from urllib.parse import urlparse
 
 class ConfigManager:  # 定义配置管理器类，类似 Java 中的 class，用于集中管理所有配置项
     """统一配置管理模块"""  # 类的 docstring，说明这是一个统一配置管理模块
@@ -15,6 +16,17 @@ class ConfigManager:  # 定义配置管理器类，类似 Java 中的 class，�
         # AI Embeddings
         self.DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "")  # 从环境变量读取阿里云 DashScope API 密钥，第二个参数是默认值（空字符串）
         self.DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")  # 从环境变量读取通义千问 API 密钥，第二个参数是默认值（空字符串）
+        self.LLM_FALLBACK_PROVIDERS = [
+            provider.strip().lower()
+            for provider in os.getenv("LLM_FALLBACK_PROVIDERS", "ollama,openai_compatible,retrieval").split(",")
+            if provider.strip()
+        ]
+        self.OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+        self.OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:0.5b")
+        self.LOCAL_LLM_TIMEOUT_SECONDS = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "45"))
+        self.OPENAI_COMPATIBLE_BASE_URL = os.getenv("OPENAI_COMPATIBLE_BASE_URL", "").rstrip("/")
+        self.OPENAI_COMPATIBLE_API_KEY = os.getenv("OPENAI_COMPATIBLE_API_KEY", "")
+        self.OPENAI_COMPATIBLE_MODEL = os.getenv("OPENAI_COMPATIBLE_MODEL", "")
         # Embedding模型选择: "dashscope" 使用云端API, "local" 使用本地中文模型
         self.EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "dashscope")  # 读取 Embedding 模型类型配置，默认使用阿里云端 API
         # 本地Embedding模型名称（仅当EMBEDDING_MODEL=local时生效）
@@ -29,17 +41,29 @@ class ConfigManager:  # 定义配置管理器类，类似 Java 中的 class，�
         self.MILVUS_PASSWORD = os.getenv("MILVUS_PASSWORD", "")  # Milvus 密码，默认为空
 
         # Redis Configuration
-        self.REDIS_HOST = os.getenv("REDIS_HOST", "localhost")  # Redis 主机地址，默认 localhost
-        self.REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))  # Redis 端口，int() 将字符串转为整数，默认 6379
-        self.REDIS_PASSWORD = os.getenv("REDIS_PASSWORD", "")  # Redis 密码，默认为空
-        self.REDIS_DB = int(os.getenv("REDIS_DB", "0"))  # Redis 数据库编号（0-15），默认使用 0 号库
+        redis_url = os.getenv("REDIS_URL", "")
+        parsed_redis = urlparse(redis_url) if redis_url else None
+        self.REDIS_HOST = os.getenv(
+            "REDIS_HOST",
+            parsed_redis.hostname if parsed_redis and parsed_redis.hostname else "localhost",
+        )  # Redis 主机地址，默认 localhost
+        self.REDIS_PORT = int(os.getenv(
+            "REDIS_PORT",
+            str(parsed_redis.port or 6379) if parsed_redis else "6379",
+        ))  # Redis 端口，int() 将字符串转为整数，默认 6379
+        self.REDIS_PASSWORD = os.getenv(
+            "REDIS_PASSWORD",
+            parsed_redis.password if parsed_redis and parsed_redis.password else "",
+        )  # Redis 密码，默认为空
+        redis_path = (parsed_redis.path or "").lstrip("/") if parsed_redis else ""
+        self.REDIS_DB = int(os.getenv("REDIS_DB", redis_path or "0"))  # Redis 数据库编号（0-15），默认使用 0 号库
 
         # MySQL Configuration
         self.DB_HOST = os.getenv("MYSQL_HOST", "localhost")  # MySQL 主机地址，默认 localhost
         self.DB_PORT = int(os.getenv("MYSQL_PORT", "3306"))  # MySQL 端口，int() 将字符串转为整数，默认 3306
         self.DB_USER = os.getenv("MYSQL_USERNAME", "root")  # MySQL 用户名，默认 root
-        self.DB_PASSWORD = os.getenv("MYSQL_PASSWORD", "123456")  # MySQL 密码，默认 123456
-        self.DB_NAME = os.getenv("MYSQL_DATABASE", "ai_knowledge_db")  # MySQL 数据库名，默认 ai_knowledge_db
+        self.DB_PASSWORD = os.getenv("MYSQL_PASSWORD", "change-me")  # MySQL 密码，默认 change-me
+        self.DB_NAME = os.getenv("MYSQL_DATABASE", "doctor_care_platform")  # MySQL 数据库名，默认 doctor_care_platform
 
         # Vector Store Configuration
         self.USE_MILVUS = os.getenv("USE_MILVUS", "true").lower() == "true"  # 是否使用 Milvus（布尔值），.lower() 统一转小写后与 "true" 比较，类似 Java 的 equalsIgnoreCase
@@ -69,7 +93,7 @@ class ConfigManager:  # 定义配置管理器类，类似 Java 中的 class，�
 
         # API Configuration
         self.API_HOST = os.getenv("API_HOST", "0.0.0.0")  # API 服务监听地址，0.0.0.0 表示监听所有网络接口
-        self.API_PORT = int(os.getenv("API_PORT", "8080"))  # API 服务监听端口，默认 8080
+        self.API_PORT = int(os.getenv("API_PORT", "8300"))  # API 服务监听端口，默认 8300
 
         # CORS Configuration
         self.CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",")  # 允许跨域的前端地址列表，.split(",") 按逗号分割字符串为列表（类似 Java 的 String.split）

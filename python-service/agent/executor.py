@@ -5,6 +5,7 @@ from intent.classifier import IntentResult  # 从意图分类器导入意图识�
 from tools.registry import tool_registry  # 从工具注册表模块导入工具注册表单例
 from core.llm import LLMService  # 从 LLM 核心模块导入 LLM 服务类
 from core.vector_store import vector_store  # 从向量存储模块导入向量存储单例
+import ast  # 导入 ast 模块，用于安全解析字符串化的字典
 import time  # 导入 time 模块
 import logging  # 导入 logging 模块
 import json  # 导入 json 模块
@@ -173,18 +174,24 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
             chunks = self.vector_store.search(search_query, k=5, similarity_threshold=0.5)  # 直接使用本地向量存储，余弦相似度阈值0.5
             scores = [getattr(doc, 'score', 0.5) for doc in chunks]  # 获取分数
 
+        chunks = [self._normalize_chunk(chunk, scores[index] if index < len(scores) else None) for index, chunk in enumerate(chunks)]  # 统一工具结果和向量检索结果
+        scores = [chunk.get("score", 0.5) for chunk in chunks]  # 使用规范化后的分数
+
         sufficiency = self.planner.evaluate_retrieval_sufficiency(chunks, query, scores)  # 评估检索结果充分性
 
         sources = []  # 初始化来源列表
+        seen_sources = set()  # 来源去重集合
         for doc in chunks:  # 遍历每个文档片段
-            source_info = {  # 构建来源信息字典
-                "source": getattr(doc, 'metadata', {}).get('source', ''),  # 文档来源路径
-                "doc_id": getattr(doc, 'metadata', {}).get('doc_id', ''),  # 文档 ID
-                "page": getattr(doc, 'metadata', {}).get('page', '')  # 页码
-            }
-            if source_info["source"]:  # 如果有来源路径
-                source_info["doc_name"] = os.path.basename(source_info["source"])  # os.path.basename() 提取文件名，类似 Java 的 File.getName()
-            sources.append(source_info)  # 添加到来源列表
+            source_info = self._source_from_chunk(doc)  # 构建来源信息字典
+            source_key = (
+                source_info.get("doc_id"),
+                source_info.get("source"),
+                source_info.get("page"),
+                source_info.get("chunk_index")
+            )
+            if source_info and source_key not in seen_sources:  # 如果有有效来源且未出现过
+                seen_sources.add(source_key)  # 记录来源
+                sources.append(source_info)  # 添加到来源列表
 
         state.add_intermediate_conclusion(  # 将检索结论添加到中间结论
             step_id=step.step_id,  # 步骤 ID
@@ -200,7 +207,7 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
 
         step.tool_call_id = tool_call_id  # 记录工具调用 ID
         step.complete({  # 标记步骤完成
-            "chunks": [{"content": getattr(doc, 'page_content', str(doc)), "score": getattr(doc, 'score', 0)} for doc in chunks],  # 提取每个片段的内容和分数
+            "chunks": chunks,  # 已规范化的片段，包含 content、metadata 和 score
             "scores": scores,  # 所有分数
             "sources": sources,  # 来源列表
             "is_sufficient": sufficiency.is_sufficient,  # 是否充分
@@ -277,9 +284,10 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
         docs = []  # 初始化文档对象列表
         if chunks:  # 如果有检索片段
             for chunk in chunks:  # 遍历每个片段
+                normalized_chunk = self._normalize_chunk(chunk)  # 兼容旧缓存和直接工具结果
                 doc = type('Doc', (), {  # type() 动态创建匿名类（类似 Java 匿名内部类），三个参数：类名、基类元组、属性字典
-                    'page_content': chunk.get('content', ''),  # 页面内容
-                    'metadata': {'source': '', 'doc_id': '', 'page': ''}  # 元数据
+                    'page_content': normalized_chunk.get('content', ''),  # 页面内容
+                    'metadata': normalized_chunk.get('metadata', {})  # 元数据
                 })()  # 注意末尾的 () 表示立即实例化该类
                 docs.append(doc)  # 添加到文档列表
 
@@ -322,6 +330,82 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
         })
 
         return step.output_data  # 返回输出数据
+
+    def _normalize_chunk(self, chunk: Any, score: Optional[float] = None) -> Dict[str, Any]:
+        """把检索结果统一成可序列化、带 metadata 的片段字典。"""
+        metadata = {}
+        content = ""
+        chunk_score = score
+
+        if isinstance(chunk, dict):
+            metadata = chunk.get("metadata") or {}
+            content = chunk.get("content") or chunk.get("page_content") or chunk.get("text") or ""
+            chunk_score = chunk.get("score", chunk_score)
+        else:
+            metadata = getattr(chunk, "metadata", {}) or {}
+            content = getattr(chunk, "page_content", str(chunk))
+            chunk_score = getattr(chunk, "score", chunk_score)
+
+        if isinstance(content, str):
+            parsed = self._parse_serialized_chunk(content)
+            if parsed:
+                content = parsed.get("content") or content
+                parsed_metadata = parsed.get("metadata") or {}
+                metadata = {**parsed_metadata, **metadata}
+
+        return {
+            "content": content,
+            "metadata": metadata,
+            "score": chunk_score if chunk_score is not None else 0.5,
+        }
+
+    def _parse_serialized_chunk(self, value: str) -> Optional[Dict[str, Any]]:
+        text = value.strip()
+        if not (text.startswith("{") and text.endswith("}")):
+            return None
+
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            try:
+                parsed = ast.literal_eval(text)
+            except (ValueError, SyntaxError):
+                return None
+
+        return parsed if isinstance(parsed, dict) else None
+
+    def _source_from_chunk(self, chunk: Dict[str, Any]) -> Dict[str, Any]:
+        metadata = chunk.get("metadata") or {}
+        source = (
+            metadata.get("source")
+            or metadata.get("file_name")
+            or metadata.get("filename")
+            or metadata.get("title")
+            or ""
+        )
+        doc_id = metadata.get("doc_id") or metadata.get("platform_knowledge_id") or ""
+        page = metadata.get("page_label") or (metadata.get("page") if metadata.get("page") is not None else "")
+        chunk_index = metadata.get("chunk_index") if metadata.get("chunk_index") is not None else ""
+        doc_name = os.path.basename(str(source)) if source else str(metadata.get("title") or "")
+
+        if not (source or doc_id or doc_name):
+            return {}
+
+        return {
+            "title": doc_name or str(source) or "知识库片段",
+            "doc": doc_name or str(source),
+            "source": source,
+            "doc_id": doc_id,
+            "page": page,
+            "chunk_index": chunk_index,
+            "snippet": self._short_snippet(chunk.get("content", "")),
+        }
+
+    def _short_snippet(self, content: str, limit: int = 180) -> str:
+        snippet = " ".join(str(content or "").split())
+        if len(snippet) > limit:
+            snippet = snippet[:limit].rstrip("，,；;、 ") + "..."
+        return snippet
 
     def _format_history(self, messages: list) -> str:  # 格式化对话历史为文本
         """格式化对话历史为上下文字符串"""  # 方法文档字符串

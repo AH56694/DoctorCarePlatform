@@ -1,4 +1,5 @@
 import os  # 导入 os 模块，用于操作系统功能（如文件路径操作）
+import re  # 导入 re 模块，用于正则表达式处理
 import json  # 导入 json 模块，用于 JSON 序列化和反序列化（类似 Java 的 Jackson/Gson）
 import requests  # 导入 requests 库，用于发送 HTTP 请求（类似 Java 的 HttpClient/OkHttp）
 from typing import AsyncGenerator, Generator  # 导入类型提示：AsyncGenerator 异步生成器，Generator 同步生成器（Python 特有，类似 Java 的 Stream）
@@ -7,7 +8,6 @@ from langchain_core.prompts import PromptTemplate  # 导入 Prompt 模板类，�
 from langchain_core.output_parsers import StrOutputParser  # 导入字符串输出解析器，将 LLM 输出解析为字符串
 from PIL import Image  # 从 Pillow 库导入 Image 类，用于图片处理（打开、转换、调整大小等）
 import pytesseract  # 导入 Tesseract OCR 的 Python 封装，用于图片文字识别
-from langchain.chat_models import init_chat_model
 
 # 使用统一配置管理模块
 from core.config import config  # 从 core 包导入全局配置实例（Python 中模块是单例的）
@@ -18,18 +18,20 @@ if config.TESSERACT_PATH:  # 如果配置中设置了 Tesseract 路径（非空�
 
 class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
     def __init__(self):  # 构造方法，初始化 LLM 服务
+        self.fallback_providers = getattr(config, "LLM_FALLBACK_PROVIDERS", ["ollama", "openai_compatible", "retrieval"])
+        self.local_timeout = getattr(config, "LOCAL_LLM_TIMEOUT_SECONDS", 45)
         # 默认使用阿里云通义千问 (需要设置 DASHSCOPE_API_KEY 环境变量)
         api_key = config.DASHSCOPE_API_KEY  # 从配置中获取 DashScope API 密钥
 
         if not api_key:  # 如果 API 密钥为空（空字符串在 Python 中为 False）
-            config.logger.warning("DASHSCOPE_API_KEY not found. LLM features will not work properly.")  # 记录警告日志
+            config.logger.warning("DASHSCOPE_API_KEY not found. Cloud LLM disabled; local/free fallbacks will be used.")  # 记录警告日志
             self.llm = None  # 将 LLM 实例设为 None（Python 的空值，类似 Java 的 null）
         else:
-            # 使用 qwen-plus 模型，效果比 turbo 好，适合知识库问答
-            # 如果需要更强的推理能力，可以使用 qwen-max
-            # 启用流式输出
-            self.llm = init_chat_model(  # 创建通义千问 LLM 实例（类似 Java 的 new Tongyi()）
-                model="deepseek-chat"
+            # 使用 DashScope 通义千问模型；如果没有 API key，上方会降级为本地提示响应。
+            self.llm = Tongyi(
+                model_name=os.getenv("DASHSCOPE_MODEL", "qwen-plus"),
+                dashscope_api_key=api_key,
+                streaming=True,
             )
 
         # 优化后的 Prompt 模板
@@ -75,6 +77,116 @@ class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
             """
         )
 
+    def _build_prompt_text(self, question: str, context_docs: list | None = None, conversation_context: str = "") -> str:
+        if not context_docs:
+            knowledge_context = "（无相关知识库信息）"
+        else:
+            knowledge_context = "\n\n".join([
+                doc.page_content if hasattr(doc, 'page_content') else str(doc)
+                for doc in context_docs
+            ])
+
+        cleaned_context = self.clean_conversation_context(conversation_context)
+        if not cleaned_context or cleaned_context.strip() == "":
+            cleaned_context = "（无对话历史）"
+
+        if hasattr(self, "prompt"):
+            return self.prompt.format(
+                conversation_context=cleaned_context,
+                knowledge_context=knowledge_context,
+                question=question,
+            )
+
+        return (
+            "你是一个专业的AI知识库助手。请根据提供的知识库信息回答用户问题。\n\n"
+            f"对话历史：\n{cleaned_context}\n\n"
+            f"相关知识库：\n{knowledge_context}\n\n"
+            f"用户当前问题：\n{question}\n\n"
+            "请给出自然、友好的回答："
+        )
+
+    def _generate_with_fallback_models(self, prompt: str, temperature: float = 0.3, max_tokens: int = 800) -> str | None:
+        providers = getattr(self, "fallback_providers", getattr(config, "LLM_FALLBACK_PROVIDERS", ["ollama", "openai_compatible", "retrieval"]))
+        for provider in providers:
+            if provider == "ollama":
+                result = self._generate_with_ollama(prompt, temperature, max_tokens)
+            elif provider in {"openai", "openai_compatible", "free"}:
+                result = self._generate_with_openai_compatible(prompt, temperature, max_tokens)
+            elif provider == "retrieval":
+                result = None
+            else:
+                config.logger.warning(f"Unknown LLM fallback provider ignored: {provider}")
+                result = None
+
+            if result:
+                config.logger.info(f"LLM fallback provider succeeded: {provider}")
+                return result
+        return None
+
+    def _generate_with_ollama(self, prompt: str, temperature: float, max_tokens: int) -> str | None:
+        base_url = getattr(config, "OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
+        model = getattr(config, "OLLAMA_MODEL", "qwen2.5:0.5b")
+        if not base_url or not model:
+            return None
+
+        try:
+            response = requests.post(
+                f"{base_url}/api/generate",
+                json={
+                    "model": model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": temperature,
+                        "num_predict": max_tokens,
+                    },
+                },
+                timeout=self.local_timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            text = (data.get("response") or "").strip()
+            return text or None
+        except Exception as exc:
+            config.logger.warning(f"Ollama fallback unavailable: {exc}")
+            return None
+
+    def _generate_with_openai_compatible(self, prompt: str, temperature: float, max_tokens: int) -> str | None:
+        base_url = getattr(config, "OPENAI_COMPATIBLE_BASE_URL", "").rstrip("/")
+        model = getattr(config, "OPENAI_COMPATIBLE_MODEL", "")
+        api_key = getattr(config, "OPENAI_COMPATIBLE_API_KEY", "")
+        if not base_url or not model:
+            return None
+
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        try:
+            response = requests.post(
+                f"{base_url}/v1/chat/completions",
+                headers=headers,
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "stream": False,
+                },
+                timeout=self.local_timeout,
+            )
+            response.raise_for_status()
+            data = response.json()
+            choices = data.get("choices") or []
+            if not choices:
+                return None
+            message = choices[0].get("message") or {}
+            text = (message.get("content") or choices[0].get("text") or "").strip()
+            return text or None
+        except Exception as exc:
+            config.logger.warning(f"OpenAI-compatible fallback unavailable: {exc}")
+            return None
+
     """
      * 获取 LLM 的回答
      * @param question 用户问题
@@ -86,16 +198,21 @@ class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
         import time  # 局部导入 time 模块（仅在此方法内使用，减少全局导入开销）
         start_time = time.time()  # 记录开始时间（类似 Java 的 System.currentTimeMillis()）
 
-        if not self.llm:  # 如果 LLM 未初始化（None 在 Python 中为 False）
-            # 当没有API密钥时，返回一个友好的默认响应
-            config.logger.info(f"LLM get_answer completed in {time.time() - start_time:.4f}s (no API key)")  # f-string 中 :.4f 表示保留4位小数
-            return "我是AI知识库助手，很高兴为您服务。由于系统未配置API密钥，我暂时无法提供详细回答。请联系管理员配置DASHSCOPE_API_KEY环境变量以启用完整功能。"
-
         # 处理包含图片的问题
         image_process_start = time.time()  # 记录图片处理开始时间
         processed_question = self.process_question_with_images(question)  # 调用图片处理方法，提取图片中的文字
         image_process_time = time.time() - image_process_start  # 计算图片处理耗时
         config.logger.info(f"Image processing completed in {image_process_time:.4f}s")  # 记录图片处理耗时
+
+        fallback_prompt = self._build_prompt_text(processed_question, context_docs, conversation_context)
+
+        if not self.llm:  # 如果 LLM 未初始化（None 在 Python 中为 False）
+            local_result = self._generate_with_fallback_models(fallback_prompt)
+            if local_result:
+                config.logger.info(f"LLM get_answer completed in {time.time() - start_time:.4f}s (local/free fallback)")
+                return local_result
+            config.logger.info(f"LLM get_answer completed in {time.time() - start_time:.4f}s (retrieval fallback)")  # f-string 中 :.4f 表示保留4位小数
+            return self._build_fallback_answer(question, context_docs, conversation_context)
 
         # 处理知识库上下文
         if not context_docs:  # 如果没有知识库文档（空列表在 Python 中为 False）
@@ -132,7 +249,149 @@ class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
         except Exception as e:  # 捕获所有异常（类似 Java 的 catch(Exception e)）
             config.logger.error(f"LLM Error: {e}")  # 记录错误日志
             config.logger.info(f"LLM get_answer completed in {time.time() - start_time:.4f}s (error)")  # 记录异常时的总耗时
-            return "抱歉，我暂时无法回答这个问题，请稍后再试。"  # 返回友好的错误提示
+            local_result = self._generate_with_fallback_models(fallback_prompt)
+            if local_result:
+                return local_result
+            return self._build_fallback_answer(question, context_docs, conversation_context)
+
+    def _build_fallback_answer(self, question: str, context_docs: list, conversation_context: str = "") -> str:
+        """
+        模型服务不可用时的检索式兜底回答。
+
+        这里不调用外部模型，只从本次检索到的知识库片段和对话上下文中提取要点，
+        避免前端向用户展示空洞的“暂时无法回答”。
+        """
+        snippets = self._rank_context_snippets(question, context_docs)
+        sources = self._collect_source_names(context_docs)
+
+        if not snippets and conversation_context:
+            snippets = self._rank_plain_text_snippets(question, self.clean_conversation_context(conversation_context), limit=4)
+
+        if not snippets:
+            return (
+                "当前没有检索到足够的知识库资料来支撑明确回答。\n\n"
+                "建议先补充患者的主要症状、持续时间、既往病史、用药情况和检查结果；"
+                "如果出现呼吸困难、意识改变、胸痛、持续加重疼痛、明显出血等情况，请及时联系医生或就近就医。"
+            )
+
+        lines = [
+            "以下先根据本次检索到的知识库资料整理，供参考。",
+            "",
+            "## 重点结论",
+        ]
+
+        for index, snippet in enumerate(snippets[:5], start=1):
+            lines.append(f"{index}. {snippet}")
+
+        lines.extend([
+            "",
+            "## 建议",
+            "- 结合患者年龄、基础疾病、生命体征、疼痛程度、用药记录和检查结果综合判断。",
+            "- 若症状持续加重，或出现呼吸困难、意识改变、胸痛、明显出血、高热不退等危险信号，请及时联系医生或就近就医。",
+        ])
+
+        if sources:
+            lines.extend(["", "## 资料来源"])
+            for source in sources[:5]:
+                lines.append(f"- {source}")
+        else:
+            lines.extend(["", "## 资料来源", "- 本次检索到的知识库片段"])
+
+        return "\n".join(lines)
+
+    def _rank_context_snippets(self, question: str, context_docs: list, limit: int = 5) -> list[str]:
+        texts = []
+        for doc in context_docs or []:
+            if hasattr(doc, "page_content"):
+                text = doc.page_content
+            elif isinstance(doc, dict):
+                text = doc.get("page_content") or doc.get("content") or doc.get("text") or ""
+            else:
+                text = str(doc)
+            if text:
+                texts.append(text)
+
+        return self._rank_plain_text_snippets(question, "\n".join(texts), limit=limit)
+
+    def _rank_plain_text_snippets(self, question: str, text: str, limit: int = 5) -> list[str]:
+        question_chars = self._important_chars(question)
+        candidates = []
+        seen = set()
+        normalized_text = re.sub(r"\s+", " ", text or "").strip()
+
+        for raw_segment in re.split(r"(?<=[。！？!?；;])\s*", normalized_text):
+            segment = self._normalize_snippet(raw_segment)
+            if not segment or segment in seen:
+                continue
+            seen.add(segment)
+
+            score = sum(1 for char in set(segment) if char in question_chars)
+            if score == 0 and question_chars:
+                continue
+
+            length_bonus = 2 if 20 <= len(segment) <= 180 else 0
+            candidates.append((score + length_bonus, segment))
+
+        if not candidates:
+            fallback = self._normalize_snippet(text)
+            return [fallback] if fallback else []
+
+        candidates.sort(key=lambda item: (item[0], -len(item[1])), reverse=True)
+        return [segment for _, segment in candidates[:limit]]
+
+    def _important_chars(self, text: str) -> set[str]:
+        stop_chars = set("的一是在和与及或为对有无中上下面后前请什么怎么如何需要是否患者老人医生情况问题")
+        return {
+            char.lower()
+            for char in text or ""
+            if (char.isalnum() or "\u4e00" <= char <= "\u9fff") and char not in stop_chars
+        }
+
+    def _normalize_snippet(self, text: str, max_length: int = 220) -> str:
+        snippet = re.sub(r"\s+", " ", text or "").strip(" -\t\r\n")
+        if not snippet:
+            return ""
+        if len(snippet) > max_length:
+            snippet = snippet[:max_length].rstrip("，,；;、 ") + "..."
+        return snippet
+
+    def _collect_source_names(self, context_docs: list) -> list[str]:
+        sources = []
+        seen = set()
+
+        for doc in context_docs or []:
+            metadata = getattr(doc, "metadata", None)
+            if metadata is None and isinstance(doc, dict):
+                metadata = doc.get("metadata", {})
+            metadata = metadata or {}
+
+            source = (
+                metadata.get("source")
+                or metadata.get("file_name")
+                or metadata.get("filename")
+                or metadata.get("doc")
+                or metadata.get("title")
+            )
+            page = metadata.get("page_label") or metadata.get("page")
+            chunk_index = metadata.get("chunk_index")
+
+            if not source:
+                continue
+
+            label = str(source)
+            details = []
+            if page not in (None, ""):
+                details.append(f"第{page}页")
+            if chunk_index not in (None, ""):
+                details.append(f"片段{chunk_index}")
+            if details:
+                label = f"{label}（{'，'.join(details)}）"
+
+            if label not in seen:
+                seen.add(label)
+                sources.append(label)
+
+        return sources
 
     def clean_conversation_context(self, context: str) -> str:  # 定义清理对话上下文的方法
         """
@@ -150,7 +409,9 @@ class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
             "网络错误",
             "超时",
             "API密钥",
-            "配置错误"
+            "配置错误",
+            "暂时无法回答",
+            "请稍后再试"
         ]
 
         # 按行分割
@@ -174,17 +435,26 @@ class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
         import time  # 局部导入 time 模块
         start_time = time.time()  # 记录开始时间
 
-        if not self.llm:  # 如果 LLM 未初始化
-            # 当没有API密钥时，返回错误信息
-            config.logger.info(f"LLM get_answer_stream completed in {time.time() - start_time:.4f}s (no API key)")
-            yield json.dumps({"type": "error", "content": "未配置API密钥"})  # yield 是 Python 特有关键字，暂停函数执行并返回一个值（类似 Java 的自定义 Iterator），json.dumps 将字典序列化为 JSON 字符串
-            return  # 提前结束生成器函数
-
         # 处理包含图片的问题
         image_process_start = time.time()  # 记录图片处理开始时间
         processed_question = self.process_question_with_images(question)  # 处理图片问题
         image_process_time = time.time() - image_process_start  # 计算耗时
         config.logger.info(f"Image processing completed in {image_process_time:.4f}s")  # 记录耗时
+
+        fallback_prompt = self._build_prompt_text(processed_question, context_docs, conversation_context)
+
+        if not self.llm:  # 如果 LLM 未初始化
+            fallback = self._generate_with_fallback_models(fallback_prompt)
+            fallback_mode = "local/free fallback"
+            if not fallback:
+                fallback = self._build_fallback_answer(question, context_docs, conversation_context)
+                fallback_mode = "retrieval fallback"
+            config.logger.info(f"LLM get_answer_stream completed in {time.time() - start_time:.4f}s ({fallback_mode})")
+            yield json.dumps({"type": "start", "content": ""}, ensure_ascii=False)
+            for token in self._chunk_text(fallback):
+                yield json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+            yield json.dumps({"type": "end", "content": fallback}, ensure_ascii=False)
+            return  # 提前结束生成器函数
 
         # 处理知识库上下文
         if not context_docs:  # 如果没有知识库文档
@@ -207,9 +477,12 @@ class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
             | StrOutputParser()
         )
 
+        stream_started = False
+
         try:
             # 发送开始信号
             yield json.dumps({"type": "start", "content": ""})  # yield 返回开始信号的 JSON 字符串
+            stream_started = True
 
             # 流式调用
             llm_start = time.time()  # 记录 LLM 调用开始时间
@@ -231,15 +504,31 @@ class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
         except Exception as e:  # 捕获异常
             config.logger.error(f"LLM Stream Error: {e}")  # 记录错误
             config.logger.info(f"LLM get_answer_stream completed in {time.time() - start_time:.4f}s (error)")  # 记录异常耗时
-            yield json.dumps({"type": "error", "content": "暂时无法回答，请稍后再试"})  # yield 返回错误信息
+            fallback = self._generate_with_fallback_models(fallback_prompt) or self._build_fallback_answer(question, context_docs, conversation_context)
+            if not stream_started:
+                yield json.dumps({"type": "start", "content": ""}, ensure_ascii=False)
+            for token in self._chunk_text(fallback):
+                yield json.dumps({"type": "token", "content": token}, ensure_ascii=False)
+            yield json.dumps({"type": "end", "content": fallback}, ensure_ascii=False)
+
+    def _chunk_text(self, text: str, size: int = 24) -> Generator[str, None, None]:
+        for index in range(0, len(text), size):
+            yield text[index:index + size]
 
     def generate_title(self, question: str) -> str:  # 定义生成对话标题的方法
         import time  # 局部导入 time 模块
         start_time = time.time()  # 记录开始时间
 
         if not self.llm:  # 如果 LLM 未初始化
-            config.logger.info(f"LLM generate_title completed in {time.time() - start_time:.4f}s (no API key)")
-            return "New Chat"  # 返回默认标题
+            local_title = self._generate_with_fallback_models(
+                self.summary_prompt.format(question=question),
+                temperature=0.2,
+                max_tokens=32,
+            )
+            if local_title:
+                return local_title.strip().strip('"').strip("'")[:20]
+            config.logger.info(f"LLM generate_title completed in {time.time() - start_time:.4f}s (fallback title)")
+            return self._fallback_title(question)  # 返回默认标题
 
         chain = (  # 构建标题生成的链式处理
             self.summary_prompt  # 使用标题生成的 Prompt 模板
@@ -259,7 +548,18 @@ class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
         except Exception as e:  # 捕获异常
             config.logger.error(f"LLM Title Generation Error: {e}")  # 记录错误
             config.logger.info(f"LLM generate_title completed in {time.time() - start_time:.4f}s (error)")  # 记录异常耗时
-            return "New Chat"  # 返回默认标题
+            local_title = self._generate_with_fallback_models(
+                self.summary_prompt.format(question=question),
+                temperature=0.2,
+                max_tokens=32,
+            )
+            if local_title:
+                return local_title.strip().strip('"').strip("'")[:20]
+            return self._fallback_title(question)  # 返回默认标题
+
+    def _fallback_title(self, question: str) -> str:
+        title = re.sub(r"\s+", "", question or "").strip("。！？!?，,；;：:")
+        return title[:10] if title else "新会话"
 
     def extract_text_from_image(self, image_url: str) -> str:  # 定义从图片 URL 提取文字的方法
         """
@@ -328,8 +628,12 @@ class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
         start_time = time.time()  # 记录开始时间
 
         if not self.llm:  # 如果 LLM 未初始化
-            config.logger.info(f"LLM generate completed in {time.time() - start_time:.4f}s (no API key)")
-            return "我是AI助手，很高兴为您服务。"  # 返回默认回复
+            result = self._generate_with_fallback_models(prompt, temperature=temperature, max_tokens=max_tokens)
+            if result:
+                config.logger.info(f"LLM generate completed in {time.time() - start_time:.4f}s (local/free fallback)")
+                return result
+            config.logger.info(f"LLM generate completed in {time.time() - start_time:.4f}s (simple fallback)")
+            return "我是AI助手，很高兴为您服务。你可以继续描述问题，我会根据已有资料尽量协助整理。"  # 返回默认回复
 
         try:
             # 使用简单的 prompt
@@ -342,7 +646,13 @@ class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
             return result  # 返回生成结果
         except Exception as e:  # 捕获异常
             config.logger.error(f"LLM generate Error: {e}")  # 记录错误
-            return "抱歉，我暂时无法回答这个问题。"  # 返回默认回复
+            result = self._generate_with_fallback_models(prompt, temperature=temperature, max_tokens=max_tokens)
+            if result:
+                return result
+            return "我可以先根据你提供的信息做基础整理；如果需要更准确的判断，请补充症状、持续时间、病史和检查结果。"  # 返回默认回复
+
+    def chat(self, prompt: str, temperature: float = 0.3, max_tokens: int = 600) -> str:
+        return self.generate(prompt, temperature=temperature, max_tokens=max_tokens)
 
 
 # 创建单例实例

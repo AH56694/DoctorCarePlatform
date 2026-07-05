@@ -271,7 +271,9 @@ class Orchestrator:  # Agent 编排器类，负责协调规划和执行，管理
             "knowledge_search": StepType.KNOWLEDGE_SEARCH,  # 知识检索
             "result_evaluation": StepType.RESULT_EVALUATION,  # 结果评估
             "answer_generation": StepType.ANSWER_GENERATION,  # 答案生成
+            "memory_read": StepType.MEMORY_READ,  # 记忆读取
             "memory_write": StepType.MEMORY_WRITE,  # 记忆写入
+            "memory_compress": StepType.MEMORY_COMPRESS,  # 记忆压缩
             "identity_answer": StepType.ANSWER_GENERATION,  # 身份回答（复用答案生成步骤）
             "admin_operation": StepType.TOOL_CALL  # 管理操作（使用工具调用步骤）
         }

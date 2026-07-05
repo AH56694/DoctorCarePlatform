@@ -238,7 +238,7 @@ class IntentClassifier:  # 统一意图分类器类，优先使用 LLM，LLM 不
             )
 
         # 去除中英文标点符号，避免 "你是谁？" 中 "？" 干扰分类
-        clean_text = re.sub(r'[，。！？、；：""''【】《》（）\(\)\[\]\{\}<>\?\!\.\,\;\:\"\'\-\—\…\~\`]', '', lower_text)  # re.sub(正则, 替换, 原字符串) 去除所有标点符号
+        clean_text = re.sub(r"[，。！？、；：\"'【】《》（）\(\)\[\]\{\}<>\?\!\.\,\;\:\\'\-\—\…\~\`]", '', lower_text)  # re.sub(正则, 替换, 原字符串) 去除所有标点符号
 
         # 计算各类关键词命中数量（使用去除标点后的文本）
         chitchat_score = sum(1 for kw in self.chitchat_keywords if kw in clean_text)  # 计算闲聊关键词命中数

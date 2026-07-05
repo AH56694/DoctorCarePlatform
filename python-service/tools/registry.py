@@ -10,8 +10,17 @@ logger = logging.getLogger(__name__)  # 创建当前模块的日志记录器（�
 
 class ToolRegistry:  # 工具注册器类（模块级单例，通过文件底部 tool_registry = ToolRegistry() 实例化）
     """工具注册器"""
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._tools = {}
+        return cls._instance
+
     def __init__(self):
-        self._tools = {}  # 工具字典，{工具名: Tool实例}
+        if not hasattr(self, "_tools"):
+            self._tools = {}  # 工具字典，{工具名: Tool实例}
 
     def register_tool(self, tool: Tool):  # 注册工具到注册器
         """注册工具"""
