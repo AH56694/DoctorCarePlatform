@@ -1,7 +1,7 @@
 ﻿from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import UserDefinedType
 
@@ -184,6 +184,9 @@ class Message(Base, TimestampMixin):
 
 class AiSession(Base, TimestampMixin):
     __tablename__ = "ai_sessions"
+    __table_args__ = (
+        Index("ix_ai_sessions_user_updated_created", "user_id", "updated_at", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(uuid_type(), primary_key=True, default=lambda: str(uuid4()))
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
@@ -196,6 +199,10 @@ class AiSession(Base, TimestampMixin):
 
 class AiMessage(Base, TimestampMixin):
     __tablename__ = "ai_messages"
+    __table_args__ = (
+        Index("ix_ai_messages_session_created", "session_id", "created_at"),
+        Index("ix_ai_messages_conversation_created", "conversation_id", "created_at"),
+    )
 
     id: Mapped[str] = mapped_column(uuid_type(), primary_key=True, default=lambda: str(uuid4()))
     session_id: Mapped[str | None] = mapped_column(ForeignKey("ai_sessions.id", ondelete="CASCADE"), nullable=True)

@@ -112,7 +112,7 @@ class AdminAiModelConfigRead(BaseModel):
 
 
 class AdminKnowledgeCreate(BaseModel):
-    collection: str = Field(default="medical.symptom_inquiry", max_length=128)
+    collection: str = Field(default="platform.general_knowledge", max_length=128)
     title: str = Field(min_length=1, max_length=255)
     content: str = ""
     file_name: str = Field(default="", max_length=255)

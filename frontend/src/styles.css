@@ -235,6 +235,19 @@ h2 {
   background: #edf6f2;
 }
 
+.sidebarLogoutButton {
+  width: 100%;
+  justify-content: center;
+  border-color: #2b4a42;
+  color: #edf7f3;
+  background: #17322c;
+}
+
+.sidebarLogoutButton:hover {
+  color: #ffffff;
+  background: #1e4138;
+}
+
 .metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -314,6 +327,17 @@ h2 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 18px;
+}
+
+.knowledgeLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 0.42fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.knowledgeMainColumn {
+  min-width: 0;
 }
 
 .profileCenterLayout {
@@ -569,8 +593,143 @@ meter {
 
 .consultationLayout {
   display: grid;
-  grid-template-columns: minmax(0, 0.92fr) minmax(360px, 1.08fr);
+  grid-template-columns: minmax(300px, 0.34fr) minmax(0, 0.66fr);
   gap: 18px;
+}
+
+.aiHistoryPanel,
+.aiChatPanel {
+  min-height: 720px;
+}
+
+.aiSessionList {
+  max-height: 610px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.conversationTile small {
+  color: #7a8a84;
+  font-size: 12px;
+}
+
+.aiMessageList {
+  min-height: 360px;
+  max-height: 520px;
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  background: #f8fbfa;
+}
+
+.messageBubble.aiBubble {
+  max-width: 86%;
+  border: 1px solid #d7e4df;
+  background: #ffffff;
+}
+
+.messageBubble.aiBubble .answerText p:last-child,
+.messageBubble.aiBubble .answerText ul:last-child,
+.messageBubble.aiBubble .answerText ol:last-child {
+  margin-bottom: 0;
+}
+
+.aiInsightPanel {
+  margin-top: 14px;
+}
+
+.referenceSourcesPanel {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  border: 1px solid #d7e4df;
+  border-radius: 8px;
+  padding: 14px;
+  background: #ffffff;
+}
+
+.referenceHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #24483f;
+}
+
+.referenceHeader span {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.referenceHeader svg {
+  color: #24715f;
+}
+
+.referenceHeader small {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #4f625c;
+  background: #edf4f1;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.referenceCitationList {
+  margin-bottom: 0;
+}
+
+.referenceEmpty {
+  margin: 0;
+}
+
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.pager button {
+  min-height: 32px;
+  border: 1px solid #c9d9d4;
+  border-radius: 8px;
+  padding: 6px 10px;
+  color: #24483f;
+  background: #ffffff;
+  font-weight: 800;
+}
+
+.pager button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.pager span {
+  color: #60726c;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.referencePager {
+  border-top: 1px solid #edf3f0;
+  padding-top: 10px;
+}
+
+.aiComposer {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.aiComposer textarea {
+  min-height: 120px;
 }
 
 .fieldLabel {
@@ -749,7 +908,7 @@ textarea {
 
 .processEvent {
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-columns: 28px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: start;
 }
@@ -780,7 +939,8 @@ textarea {
 }
 
 .processEvent strong,
-.processEvent small {
+.processEvent small,
+.processEvent em {
   display: block;
 }
 
@@ -788,6 +948,58 @@ textarea {
   margin-top: 2px;
   color: #60726c;
   line-height: 1.45;
+}
+
+.processEvent em {
+  align-self: center;
+  min-width: 54px;
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: #4f625c;
+  background: #edf4f1;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 800;
+  text-align: center;
+}
+
+.processEvent.running em {
+  color: #7a5519;
+  background: #fff4d8;
+}
+
+.processEvent.failed em {
+  color: #a33b3b;
+  background: #fdeaea;
+}
+
+.aiFlowSurface {
+  display: grid;
+  gap: 12px;
+}
+
+.aiRunMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.aiRunMeta span {
+  max-width: 100%;
+  overflow: hidden;
+  border: 1px solid #d7e4df;
+  border-radius: 999px;
+  padding: 6px 10px;
+  color: #405650;
+  background: #ffffff;
+  font-size: 12px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiCallTimeline {
+  padding-top: 2px;
 }
 
 .answerReport {
@@ -1122,6 +1334,43 @@ textarea {
 
 .wideUpload {
   margin-bottom: 4px;
+}
+
+.knowledgeUploadControls {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr);
+  align-items: stretch;
+}
+
+.uploadButtonControl {
+  min-height: 40px;
+  border-style: solid;
+  color: #ffffff;
+  background: #1f705d;
+}
+
+.uploadButtonControl:hover {
+  border-color: #1f705d;
+  background: #185a4b;
+}
+
+.uploadButtonControl svg,
+.uploadButtonControl small {
+  color: inherit;
+}
+
+.uploadButtonControl.disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.knowledgeRecentPanel {
+  position: sticky;
+  top: 18px;
+}
+
+.knowledgePager {
+  margin-top: 12px;
 }
 
 .inviteForm {
@@ -1588,8 +1837,13 @@ textarea {
   .profilesLayout,
   .profileCenterLayout,
   .chatLayout,
-  .consultationLayout {
+  .consultationLayout,
+  .knowledgeLayout {
     grid-template-columns: 1fr;
+  }
+
+  .knowledgeRecentPanel {
+    position: static;
   }
 
   .flowLine,

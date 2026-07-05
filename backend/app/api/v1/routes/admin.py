@@ -1,3 +1,4 @@
+import asyncio
 from uuid import UUID
 
 import httpx
@@ -21,7 +22,7 @@ from backend.app.db.models import (
     User,
     UserRole,
 )
-from backend.app.db.session import get_db
+from backend.app.db.session import SessionLocal, get_db
 from backend.app.schemas.admin import (
     AdminAiMessageRead,
     AdminAiModelConfigCreate,
@@ -43,6 +44,7 @@ from backend.app.services.sms import SmsNotificationService
 router = APIRouter()
 
 KNOWLEDGE_COLLECTIONS: dict[str, tuple[str, str]] = {
+    "platform.general_knowledge": ("platform", "general_knowledge"),
     "medical.symptom_inquiry": ("medical", "symptom_inquiry"),
     "medical.medication_consult": ("medical", "medication_consult"),
     "medical.report_interpretation": ("medical", "report_interpretation"),
@@ -343,6 +345,43 @@ async def create_knowledge_item(
     db.flush()
 
     rag_doc_id = _rag_doc_id(item.id)
+    item.metadata_json = {
+        **(item.metadata_json or {}),
+        "rag_doc_id": rag_doc_id,
+        "rag_status": "pending",
+        "rag_chunk_count": 0,
+    }
+    _log_admin_action(
+        db,
+        action="knowledge.ingest_queued",
+        admin_id=payload.admin_id,
+        target_type="ai_knowledge_chunk",
+        target_id=item.id,
+        target=payload.title,
+        detail={"collection": payload.collection, "rag_doc_id": rag_doc_id},
+    )
+    db.commit()
+    db.refresh(item)
+    asyncio.create_task(
+        _ingest_knowledge_background(
+        item.id,
+        payload.model_dump(),
+        category,
+        subcategory,
+        rag_doc_id,
+        )
+    )
+    return _knowledge_read(item)
+
+
+async def _ingest_knowledge_background(
+    item_id: str,
+    payload_data: dict,
+    category: str,
+    subcategory: str,
+    rag_doc_id: int,
+) -> None:
+    payload = AdminKnowledgeCreate(**payload_data)
     try:
         rag_result = await RagServiceClient().ingest_knowledge(
             {
@@ -356,15 +395,55 @@ async def create_knowledge_item(
                 "file_type": payload.file_type,
                 "file_content_base64": payload.file_content_base64,
                 "source": payload.file_name or payload.title.strip(),
-                "metadata": {"platform_knowledge_id": item.id, "admin_id": payload.admin_id},
+                "metadata": {"platform_knowledge_id": item_id, "admin_id": payload.admin_id},
             }
         )
-    except httpx.HTTPError as exc:
+    except Exception as exc:
+        _mark_knowledge_ingest_failed(item_id, payload, rag_doc_id, str(exc))
+        return
+
+    db = SessionLocal()
+    try:
+        item = db.query(AiKnowledgeChunk).filter(AiKnowledgeChunk.id == item_id).first()
+        if not item:
+            return
+        item.metadata_json = {
+            **(item.metadata_json or {}),
+            "rag_doc_id": rag_doc_id,
+            "rag_status": "indexed",
+            "rag_chunk_count": int(rag_result.get("chunks_count", 0) or 0),
+            "rag_error": "",
+        }
+        _log_admin_action(
+            db,
+            action="knowledge.ingest",
+            admin_id=payload.admin_id,
+            target_type="ai_knowledge_chunk",
+            target_id=item.id,
+            target=payload.title,
+            detail={"collection": payload.collection, "rag_doc_id": rag_doc_id, "rag_result": rag_result},
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def _mark_knowledge_ingest_failed(
+    item_id: str,
+    payload: AdminKnowledgeCreate,
+    rag_doc_id: int,
+    error: str,
+) -> None:
+    db = SessionLocal()
+    try:
+        item = db.query(AiKnowledgeChunk).filter(AiKnowledgeChunk.id == item_id).first()
+        if not item:
+            return
         item.metadata_json = {
             **(item.metadata_json or {}),
             "rag_doc_id": rag_doc_id,
             "rag_status": "failed",
-            "rag_error": str(exc),
+            "rag_error": error,
         }
         _log_admin_action(
             db,
@@ -373,29 +452,11 @@ async def create_knowledge_item(
             target_type="ai_knowledge_chunk",
             target_id=item.id,
             target=payload.title,
-            detail={"collection": payload.collection, "error": str(exc)},
+            detail={"collection": payload.collection, "error": error},
         )
         db.commit()
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="RAG 微服务入库失败，请确认 python-service 已启动。") from exc
-
-    item.metadata_json = {
-        **(item.metadata_json or {}),
-        "rag_doc_id": rag_doc_id,
-        "rag_status": "indexed",
-        "rag_chunk_count": int(rag_result.get("chunks_count", 0) or 0),
-    }
-    _log_admin_action(
-        db,
-        action="knowledge.ingest",
-        admin_id=payload.admin_id,
-        target_type="ai_knowledge_chunk",
-        target_id=item.id,
-        target=payload.title,
-        detail={"collection": payload.collection, "rag_doc_id": rag_doc_id, "rag_result": rag_result},
-    )
-    db.commit()
-    db.refresh(item)
-    return _knowledge_read(item)
+    finally:
+        db.close()
 
 
 @router.delete("/knowledge-items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)

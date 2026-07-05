@@ -1,6 +1,6 @@
 param(
   [string]$Database = "doctor_care_platform",
-  [string]$RootPassword = "change-me"
+  [string]$RootPassword = $(if ($env:MYSQL_ROOT_PASSWORD) { $env:MYSQL_ROOT_PASSWORD } elseif ($env:MYSQL_PASSWORD) { $env:MYSQL_PASSWORD } else { "change-me" })
 )
 
 $ErrorActionPreference = "Stop"

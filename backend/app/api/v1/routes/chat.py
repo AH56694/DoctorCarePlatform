@@ -1,17 +1,50 @@
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from backend.app.db.models import AiMessage, AiSession
+from backend.app.db.models import AiMessage, AiSession, User
 from backend.app.db.session import get_db
-from backend.app.schemas.chat import AiChatRequest, AiChatResponse
+from backend.app.schemas.chat import AiChatRequest, AiChatResponse, AiMessageRead, AiSessionRead
 from backend.app.services.message_cache import message_cache
 from backend.app.services.rag_client import RagServiceClient
 
 router = APIRouter()
+
+
+@router.get("/sessions", response_model=list[AiSessionRead])
+async def list_sessions(
+    user_id: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_db),
+) -> list[AiSession]:
+    query = db.query(AiSession)
+    if user_id:
+        query = query.filter(AiSession.user_id == user_id)
+    return query.order_by(AiSession.updated_at.desc(), AiSession.created_at.desc()).limit(limit).all()
+
+
+@router.get("/sessions/{session_id}/messages", response_model=list[AiMessageRead])
+async def list_session_messages(
+    session_id: str,
+    user_id: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=500),
+    db: Session = Depends(get_db),
+) -> list[AiMessage]:
+    session = db.query(AiSession).filter(AiSession.id == session_id).first()
+    if not session:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="AI session not found")
+    if user_id and session.user_id and session.user_id != user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the owner can read this AI session")
+    return (
+        db.query(AiMessage)
+        .filter(AiMessage.session_id == session_id)
+        .order_by(AiMessage.created_at.asc())
+        .limit(limit)
+        .all()
+    )
 
 
 @router.post("/chat", response_model=AiChatResponse)
@@ -56,12 +89,13 @@ async def chat(payload: AiChatRequest, db: Session = Depends(get_db)) -> AiChatR
     )
     if response.intent.category == "emergency":
         session.risk_flag = "emergency"
+    session.summary = response.answer[:500]
     db.add_all([user_message, assistant_message])
     db.commit()
     db.refresh(user_message)
     db.refresh(assistant_message)
     _cache_ai_messages(session, user_message, assistant_message)
-    return response
+    return response.model_copy(update={"session_id": session.id})
 
 
 @router.post("/chat/stream")
@@ -92,8 +126,9 @@ async def chat_stream(payload: AiChatRequest, db: Session = Depends(get_db)) -> 
                 await _hydrate_final_run_state(client, str(run_id), stream_state)
 
             response = _response_from_stream_state(client, stream_state)
-            _persist_ai_messages(db, payload, response)
-            yield _sse({"type": "final", "response": response.model_dump()})
+            session = _persist_ai_messages(db, payload, response)
+            final_response = response.model_copy(update={"session_id": session.id})
+            yield _sse({"type": "final", "response": final_response.model_dump()})
         except Exception as exc:
             yield _sse({"type": "error", "message": f"问诊流式响应失败：{exc}"})
 
@@ -268,7 +303,7 @@ def _response_from_stream_state(
     )
 
 
-def _persist_ai_messages(db: Session, payload: AiChatRequest, response: AiChatResponse) -> None:
+def _persist_ai_messages(db: Session, payload: AiChatRequest, response: AiChatResponse) -> AiSession:
     session = _get_or_create_ai_session(db, payload, response)
     user_message = AiMessage(
         session_id=session.id,
@@ -308,11 +343,13 @@ def _persist_ai_messages(db: Session, payload: AiChatRequest, response: AiChatRe
     )
     if response.intent.category == "emergency":
         session.risk_flag = "emergency"
+    session.summary = response.answer[:500]
     db.add_all([user_message, assistant_message])
     db.commit()
     db.refresh(user_message)
     db.refresh(assistant_message)
     _cache_ai_messages(session, user_message, assistant_message)
+    return session
 
 
 def _sse(payload: dict[str, Any]) -> str:
@@ -363,7 +400,7 @@ def _get_or_create_ai_session(db: Session, payload: AiChatRequest, response: AiC
         session = db.query(AiSession).filter(AiSession.id == payload.conversation_id).first()
     if session is None:
         session_data = {
-            "user_id": payload.user_id,
+            "user_id": _existing_user_id(db, payload.user_id),
             "role_context": "patient",
             "title": payload.message[:80],
             "risk_flag": "emergency" if response.intent.category == "emergency" else "none",
@@ -375,6 +412,12 @@ def _get_or_create_ai_session(db: Session, payload: AiChatRequest, response: AiC
         db.add(session)
         db.flush()
     return session
+
+
+def _existing_user_id(db: Session, user_id: str | None) -> str | None:
+    if not user_id:
+        return None
+    return user_id if db.get(User, user_id) else None
 
 
 def _cache_ai_messages(

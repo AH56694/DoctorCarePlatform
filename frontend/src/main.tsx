@@ -1,5 +1,6 @@
 ﻿import { StrictMode, type ReactNode, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { useCallback } from "react";
 import { useEffect } from "react";
 import {
   Activity,
@@ -51,13 +52,50 @@ type ChatResponse = {
     confidence: number;
   };
   cache_hit_level: string;
-  citations: Array<{ title: string; snippet: string; source_url?: string; page?: string | number; chunk_index?: string | number }>;
+  citations: CitationSource[];
   task_type?: string;
   run_id?: string | null;
   trace_id?: string | null;
+  session_id?: string | null;
   steps?: Array<Record<string, unknown>>;
   tool_calls?: Array<Record<string, unknown>>;
   intermediate_conclusions?: Array<Record<string, unknown>>;
+};
+
+type CitationSource = {
+  title?: string;
+  doc?: string;
+  source?: string;
+  source_url?: string;
+  doc_id?: string | number;
+  snippet?: string;
+  content?: string;
+  page?: string | number;
+  chunk_index?: string | number;
+  hit_count?: number;
+};
+
+type AiSessionHistory = {
+  id: string;
+  user_id?: string | null;
+  title: string;
+  risk_flag: string;
+  summary: string;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+type AiConversationMessage = {
+  id: string;
+  session_id?: string | null;
+  sender: "user" | "ai" | string;
+  content: string;
+  intent_category?: string;
+  intent_subcategory?: string;
+  intent_confidence?: number;
+  cache_hit_level?: string;
+  metadata_json?: Record<string, unknown>;
+  created_at?: string | null;
 };
 
 type StreamProcessEvent = {
@@ -66,6 +104,14 @@ type StreamProcessEvent = {
   label: string;
   detail: string;
   status?: string;
+};
+
+type AiFlowItem = {
+  id: string;
+  type: "status" | "tool" | "sources" | "error";
+  label: string;
+  detail: string;
+  status: string;
 };
 
 type JobPosting = {
@@ -418,6 +464,10 @@ const collections = [
   { name: "招聘流程", key: "platform.recruitment_process", chunks: 160, freshness: "已启用" }
 ];
 
+const defaultKnowledgeCollection = "platform.general_knowledge";
+const recentKnowledgePageSize = 3;
+const allKnowledgePageSize = 5;
+
 
 const identitySteps = [
   { title: "注册或登录", text: "支持手机号和密码进入系统。" },
@@ -431,16 +481,75 @@ const identityProfiles = [
   { label: "护理身份", status: "证书资料待审核", detail: "可维护简历、上传证书、应聘岗位、接受邀请并管理接单状态。" },
   { label: "管理员审核", status: "审核队列可用", detail: "可审核护理证书、实名结果、平台内容和模型配置。" }
 ];
+
+const currentSessionKey = "doctor-care-platform-current-session";
+
+type StoredSession = {
+  access_token?: string;
+  account: AccountRead;
+  saved_at: string;
+};
+
+function loadCurrentSession(): StoredSession | null {
+  try {
+    const raw = localStorage.getItem(currentSessionKey);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as Partial<StoredSession>;
+    if (!parsed.account || typeof parsed.account.id !== "string" || typeof parsed.account.phone !== "string") {
+      return null;
+    }
+    return parsed as StoredSession;
+  } catch {
+    return null;
+  }
+}
+
+function saveCurrentSession(account: AccountRead, accessToken?: string) {
+  const previous = loadCurrentSession();
+  const session: StoredSession = {
+    access_token: accessToken ?? previous?.access_token,
+    account,
+    saved_at: new Date().toISOString()
+  };
+  localStorage.setItem(currentSessionKey, JSON.stringify(session));
+}
+
+function clearCurrentSession() {
+  localStorage.removeItem(currentSessionKey);
+}
+
+async function fetchAccountIdentity(userId: string): Promise<AccountRead> {
+  const response = await fetch(`/api/v1/accounts/${encodeURIComponent(userId)}/identity`);
+  if (!response.ok) {
+    throw new Error(await response.text() || `接口返回 ${response.status}`);
+  }
+  return response.json() as Promise<AccountRead>;
+}
+
 function App() {
-  const [account, setAccount] = useState<AccountRead | null>(null);
+  const [account, setAccountState] = useState<AccountRead | null>(() => loadCurrentSession()?.account ?? null);
+  const [restoringSession, setRestoringSession] = useState(() => Boolean(loadCurrentSession()?.account));
   const [activeView, setActiveView] = useState<View>("overview");
   const isAdmin = Boolean(account && isAdminAccount(account));
   const visibleNavItems = navItems.filter((item) => !item.adminOnly || isAdmin);
   const activeLabel = visibleNavItems.find((item) => item.id === activeView)?.label ?? "流程总览";
 
+  const setAccount = useCallback((nextAccount: AccountRead) => {
+    saveCurrentSession(nextAccount);
+    setAccountState(nextAccount);
+  }, []);
+
   function logout() {
-    setAccount(null);
+    clearCurrentSession();
+    setAccountState(null);
     setActiveView("overview");
+  }
+
+  function handleAuthenticated(result: AuthResponse) {
+    saveCurrentSession(result.account, result.access_token);
+    setAccountState(result.account);
   }
 
   useEffect(() => {
@@ -449,8 +558,57 @@ function App() {
     }
   }, [activeView, visibleNavItems]);
 
+  useEffect(() => {
+    const cachedAccount = loadCurrentSession()?.account;
+    if (!cachedAccount) {
+      setRestoringSession(false);
+      return;
+    }
+    let cancelled = false;
+    setRestoringSession(true);
+    fetchAccountIdentity(cachedAccount.id)
+      .then((freshAccount) => {
+        if (cancelled) {
+          return;
+        }
+        saveCurrentSession(freshAccount);
+        setAccountState(freshAccount);
+      })
+      .catch(() => {
+        if (cancelled) {
+          return;
+        }
+        setAccountState(cachedAccount);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setRestoringSession(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   if (!account) {
-    return <AuthGate onAuthenticated={setAccount} />;
+    if (restoringSession) {
+      return (
+        <main className="authShell">
+          <section className="authPanel">
+            <div className="authBrand brand">
+              <div className="brandMark">
+                <HeartPulse size={24} />
+              </div>
+              <div>
+                <strong>DoctorCarePlatform</strong>
+                <span>正在恢复登录状态</span>
+              </div>
+            </div>
+          </section>
+        </main>
+      );
+    }
+    return <AuthGate onAuthenticated={handleAuthenticated} />;
   }
 
   return (
@@ -487,6 +645,10 @@ function App() {
             <span>{isAdmin ? "管理员" : roleLabel(account.active_role)} / {statusLabel(account.status)}</span>
           </div>
         </div>
+        <button className="logoutButton sidebarLogoutButton" onClick={logout} type="button">
+          <LogOut size={18} />
+          <span>退出登录</span>
+        </button>
       </aside>
 
       <section className="workspace">
@@ -502,16 +664,12 @@ function App() {
             <button className="iconButton" title="审核状态" type="button">
               <BadgeCheck size={19} />
             </button>
-            <button className="logoutButton" onClick={logout} type="button">
-              <LogOut size={18} />
-              <span>退出登录</span>
-            </button>
           </div>
         </header>
 
         {activeView === "overview" && <Overview />}
         {activeView === "accounts" && <AccountsIdentity account={account} setAccount={setAccount} />}
-        {activeView === "consultation" && <Consultation />}
+        {activeView === "consultation" && <Consultation account={account} />}
         {activeView === "jobs" && <Jobs account={account} onOpenChat={() => setActiveView("chat")} />}
         {activeView === "profiles" && <Profiles account={account} onOpenChat={() => setActiveView("chat")} />}
         {activeView === "chat" && <CareChat account={account} />}
@@ -571,6 +729,16 @@ function sourceTypeLabel(sourceType: string | undefined | null) {
   return labels[sourceType || ""] || sourceType || "直接沟通";
 }
 
+function knowledgeStatusLabel(status: string | undefined | null) {
+  const labels: Record<string, string> = {
+    pending: "后台解析中",
+    indexing: "后台解析中",
+    indexed: "已入库",
+    failed: "解析失败"
+  };
+  return labels[status || ""] || statusLabel(status);
+}
+
 function isAdminAccount(account: AccountRead) {
   return account.phone.toLowerCase().startsWith("admin") || account.roles.some((role) => role.role === "admin");
 }
@@ -609,7 +777,7 @@ function saveRememberedAccount(account: AccountRead) {
   localStorage.setItem(rememberedAccountsKey, JSON.stringify(next));
 }
 
-function AuthGate({ onAuthenticated }: { onAuthenticated: (account: AccountRead) => void }) {
+function AuthGate({ onAuthenticated }: { onAuthenticated: (result: AuthResponse) => void }) {
   const [authMode, setAuthMode] = useState<"register" | "login">("login");
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
@@ -664,7 +832,7 @@ function AuthGate({ onAuthenticated }: { onAuthenticated: (account: AccountRead)
         saveRememberedAccount(result.account);
         setRememberedAccounts(loadRememberedAccounts());
       }
-      onAuthenticated(result.account);
+      onAuthenticated(result);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "登录或注册失败。");
     } finally {
@@ -1198,18 +1366,114 @@ function AccountsIdentity({
     </section>
   );
 }
-function Consultation() {
+function Consultation({ account }: { account: AccountRead }) {
   const [message, setMessage] = useState("老人术后夜间疼痛明显，当前用药说明和护理记录见附件，请帮我判断需要重点观察什么。");
   const [attachments, setAttachments] = useState<AiAttachment[]>([]);
   const [response, setResponse] = useState<ChatResponse | null>(null);
+  const [sessions, setSessions] = useState<AiSessionHistory[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [chatMessages, setChatMessages] = useState<AiConversationMessage[]>([]);
   const [processEvents, setProcessEvents] = useState<StreamProcessEvent[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+    const result = await fetch(path, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        ...(init?.headers ?? {})
+      }
+    });
+    if (!result.ok) {
+      const detail = await result.text();
+      throw new Error(detail || `接口返回 ${result.status}`);
+    }
+    return result.json() as Promise<T>;
+  }
+
+  async function loadSessions(nextSelectedId?: string | null) {
+    setHistoryLoading(true);
+    try {
+      const rows = await requestJson<AiSessionHistory[]>(`/api/v1/ai/sessions?user_id=${encodeURIComponent(account.id)}&limit=80`);
+      setSessions(rows);
+      const targetId = nextSelectedId ?? selectedSessionId ?? rows[0]?.id ?? null;
+      setSelectedSessionId(targetId);
+      if (targetId) {
+        await loadSessionMessages(targetId);
+      } else {
+        setChatMessages([]);
+      }
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "加载历史问诊失败。");
+    } finally {
+      setHistoryLoading(false);
+    }
+  }
+
+  async function loadSessionMessages(sessionId: string) {
+    try {
+      const rows = await requestJson<AiConversationMessage[]>(
+        `/api/v1/ai/sessions/${sessionId}/messages?user_id=${encodeURIComponent(account.id)}&limit=300`
+      );
+      setChatMessages(rows);
+      const lastAiMessage = [...rows].reverse().find((item) => item.sender === "ai");
+      if (lastAiMessage) {
+        setResponse(responseFromStoredMessage(lastAiMessage));
+      } else {
+        setResponse(null);
+      }
+      setProcessEvents([]);
+    } catch (loadError) {
+      setError(loadError instanceof Error ? loadError.message : "加载问诊消息失败。");
+    }
+  }
+
+  function startNewSession() {
+    setSelectedSessionId(null);
+    setChatMessages([]);
+    setResponse(null);
+    setProcessEvents([]);
+    setError("");
+    setMessage("");
+    setAttachments([]);
+  }
+
+  useEffect(() => {
+    void loadSessions();
+  }, [account.id]);
+
   async function submitConsultation() {
+    const outgoingText = message.trim();
+    if (!outgoingText) {
+      return;
+    }
     setLoading(true);
     setError("");
     setProcessEvents([]);
+    const pendingUserId = `pending-user-${Date.now()}`;
+    const pendingAiId = `pending-ai-${Date.now()}`;
+    setChatMessages((current) => [
+      ...current,
+      {
+        id: pendingUserId,
+        session_id: selectedSessionId,
+        sender: "user",
+        content: outgoingText,
+        created_at: new Date().toISOString()
+      },
+      {
+        id: pendingAiId,
+        session_id: selectedSessionId,
+        sender: "ai",
+        content: "",
+        intent_category: "medical_consult",
+        intent_subcategory: "streaming",
+        cache_hit_level: "streaming",
+        created_at: new Date().toISOString()
+      }
+    ]);
     setResponse({
       answer: "",
       intent: { category: "medical_consult", subcategory: "streaming", confidence: 0 },
@@ -1223,7 +1487,12 @@ function Consultation() {
       const result = await fetch("/api/v1/ai/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message, attachments })
+        body: JSON.stringify({
+          message: outgoingText,
+          attachments,
+          user_id: account.id,
+          conversation_id: selectedSessionId
+        })
       });
       if (!result.ok) {
         throw new Error(`接口返回 ${result.status}`);
@@ -1231,9 +1500,11 @@ function Consultation() {
       if (!result.body) {
         throw new Error("浏览器不支持流式响应。");
       }
-      await consumeConsultationStream(result.body);
+      await consumeConsultationStream(result.body, pendingAiId);
+      setMessage("");
+      setAttachments([]);
     } catch {
-      setResponse({
+      const demoResponse = {
         answer:
           "演示回复：当前页面暂未连通本地后端，但问诊界面已经可用。请启动 8000 端口后端服务后获取真实回复。",
         intent: { category: "medical_consult", subcategory: "medication_consult", confidence: 0.95 },
@@ -1244,7 +1515,15 @@ function Consultation() {
             snippet: "用药相关问题会进入用药咨询知识库检索。"
           }
         ]
-      });
+      };
+      setResponse(demoResponse);
+      setChatMessages((current) => current.map((item) => item.id === pendingAiId ? {
+        ...item,
+        content: demoResponse.answer,
+        intent_category: demoResponse.intent.category,
+        intent_subcategory: demoResponse.intent.subcategory,
+        cache_hit_level: demoResponse.cache_hit_level
+      } : item));
       setProcessEvents([
         {
           id: "demo-status",
@@ -1260,7 +1539,7 @@ function Consultation() {
     }
   }
 
-  async function consumeConsultationStream(body: ReadableStream<Uint8Array>) {
+  async function consumeConsultationStream(body: ReadableStream<Uint8Array>, pendingAiId: string) {
     const reader = body.getReader();
     const decoder = new TextDecoder("utf-8");
     let buffer = "";
@@ -1273,15 +1552,15 @@ function Consultation() {
       buffer += decoder.decode(value, { stream: true });
       const events = buffer.split("\n\n");
       buffer = events.pop() || "";
-      events.forEach(handleStreamChunk);
+      events.forEach((event) => handleStreamChunk(event, pendingAiId));
     }
 
     if (buffer.trim()) {
-      handleStreamChunk(buffer);
+      handleStreamChunk(buffer, pendingAiId);
     }
   }
 
-  function handleStreamChunk(rawEvent: string) {
+  function handleStreamChunk(rawEvent: string, pendingAiId: string) {
     const payload = parseSsePayload(rawEvent);
     if (!payload) {
       return;
@@ -1297,12 +1576,14 @@ function Consultation() {
         }),
         answer: `${current?.answer || ""}${content}`
       }));
+      setChatMessages((current) => current.map((item) => item.id === pendingAiId ? { ...item, content: `${item.content || ""}${content}` } : item));
     } else if (type === "status") {
+      const detail = String(payload.detail || "");
       appendProcessEvent({
         type: "status",
         label: String(payload.label || "正在处理"),
-        detail: String(payload.detail || ""),
-        status: "completed"
+        detail,
+        status: detail.includes("处理中") ? "running" : "completed"
       });
     } else if (type === "tool") {
       const toolCall = asRecord(payload.tool_call);
@@ -1319,10 +1600,11 @@ function Consultation() {
       }));
     } else if (type === "sources") {
       const sources = Array.isArray(payload.sources) ? payload.sources as ChatResponse["citations"] : [];
+      const documentCount = countCitationDocuments(sources);
       appendProcessEvent({
         type: "sources",
         label: "已找到参考来源",
-        detail: sources.length ? `${sources.length} 条知识库片段可用于回答` : "未检索到明确来源",
+        detail: documentCount ? `检索到 ${documentCount} 个知识库文档` : "未检索到明确来源",
         status: "completed"
       });
       setResponse((current) => ({
@@ -1333,6 +1615,29 @@ function Consultation() {
       const finalResponse = payload.response as ChatResponse | undefined;
       if (finalResponse) {
         setResponse(finalResponse);
+        const finalSessionId = finalResponse.session_id || selectedSessionId;
+        if (finalSessionId) {
+          setSelectedSessionId(finalSessionId);
+        }
+        setChatMessages((current) => current.map((item) => item.id === pendingAiId ? {
+          ...item,
+          session_id: finalSessionId,
+          content: finalResponse.answer,
+          intent_category: finalResponse.intent.category,
+          intent_subcategory: finalResponse.intent.subcategory,
+          intent_confidence: finalResponse.intent.confidence,
+          cache_hit_level: finalResponse.cache_hit_level,
+          metadata_json: {
+            citations: finalResponse.citations,
+            task_type: finalResponse.task_type,
+            run_id: finalResponse.run_id,
+            trace_id: finalResponse.trace_id,
+            tool_calls: finalResponse.tool_calls,
+            steps: finalResponse.steps,
+            intermediate_conclusions: finalResponse.intermediate_conclusions
+          }
+        } : item.session_id ? item : { ...item, session_id: finalSessionId }));
+        void loadSessions(finalSessionId || null);
       }
     } else if (type === "error") {
       const message = String(payload.message || "流式问诊失败。");
@@ -1363,6 +1668,7 @@ function Consultation() {
     () => Math.round((response?.intent.confidence ?? 0) * 100),
     [response]
   );
+  const selectedSession = sessions.find((item) => item.id === selectedSessionId);
 
   async function handleConsultationFiles(files: FileList | null) {
     if (!files?.length) {
@@ -1393,106 +1699,70 @@ function Consultation() {
 
   return (
     <section className="consultationLayout">
-      <article className="panel">
+      <article className="panel aiHistoryPanel">
         <div className="panelHeader">
           <div>
-            <h2>智能问诊</h2>
-            <p>输入症状、用药或护理问题，也可以上传问诊资料、护理记录、检查摘要等文本文件。</p>
+            <h2>历史问诊</h2>
+            <p>查看过往问诊对话，或开始新的 AI 问诊。</p>
           </div>
-          <Stethoscope size={22} />
+          <button className="iconButton" onClick={startNewSession} title="新建问诊" type="button">
+            <MessageSquareText size={19} />
+          </button>
         </div>
-
-        <label className="fieldLabel" htmlFor="consultationInput">
-          问诊内容
-        </label>
-        <textarea
-          id="consultationInput"
-          onChange={(event) => setMessage(event.target.value)}
-          value={message}
-        />
-        <label className="fieldLabel" htmlFor="consultationFiles">
-          问诊文件
-        </label>
-        <label className="uploadControl wideUpload" htmlFor="consultationFiles">
-          <UploadCloud size={20} />
-          <span>
-            <strong>选择问诊文件</strong>
-            <small>{attachments.length ? `已选择 ${attachments.length} 个文件` : "支持多选文本、检查摘要、护理记录"}</small>
-          </span>
-          <input id="consultationFiles" multiple onChange={(event) => void handleConsultationFiles(event.target.files)} type="file" />
-        </label>
-        <div className="attachmentList">
-          {attachments.map((attachment) => (
-            <span key={`${attachment.file_name}-${attachment.file_type}`}>
-              {attachment.file_name} / {attachment.content ? `${attachment.content.length} 字` : "仅记录文件信息"}
-            </span>
+        <div className="miniList aiSessionList">
+          {historyLoading && <p className="mutedText">正在加载历史问诊...</p>}
+          {!historyLoading && sessions.map((session) => (
+            <button
+              className={`conversationTile ${selectedSessionId === session.id ? "active" : ""}`}
+              key={session.id}
+              onClick={() => {
+                setSelectedSessionId(session.id);
+                void loadSessionMessages(session.id);
+              }}
+              type="button"
+            >
+              <strong>{session.title || "未命名问诊"}</strong>
+              <span>{session.summary || "暂无摘要"}</span>
+              <small>{formatDateTime(session.updated_at || session.created_at)}</small>
+            </button>
           ))}
+          {!historyLoading && sessions.length === 0 && <p className="mutedText">暂无历史问诊。</p>}
         </div>
-        <div className="buttonRow">
-          <button className="primaryButton" disabled={loading || !message.trim()} onClick={submitConsultation}>
-            {loading ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
-            <span>{loading ? "问诊中..." : "提交问诊"}</span>
-          </button>
-          <button
-            className="secondaryButton"
-            onClick={() => setMessage("护理人员如何预防术后长期卧床导致的压疮？")}
-            type="button"
-          >
-            护理示例
-          </button>
-        </div>
-        {error && <p className="notice">{error}</p>}
       </article>
 
-      <article className="panel resultPanel">
+      <article className="panel resultPanel aiChatPanel">
         <div className="panelHeader compact">
-          <h2>智能回复</h2>
-          <ClipboardList size={20} />
+          <div>
+            <h2>{selectedSession ? selectedSession.title || "智能问诊" : "新的智能问诊"}</h2>
+            <p>{selectedSession ? "继续与 AI 讨论当前问诊。" : "输入问题后会创建一条新的问诊会话。"}</p>
+          </div>
+          <Stethoscope size={20} />
         </div>
-        {response ? (
-          <>
-            <details className="collapsiblePanel streamProcess" open={loading}>
-              <summary className="processHeader">
-                <span>
-                  <Sparkles size={18} />
-                  <strong>{loading ? "AI 正在思考" : "处理过程"}</strong>
-                </span>
-                <ChevronDown size={18} />
-              </summary>
-              <div className="processTimeline">
-                {processEvents.length ? (
-                  processEvents.map((event) => (
-                    <div className={`processEvent ${event.type}`} key={event.id}>
-                      <span>{event.type === "tool" ? <Database size={15} /> : event.type === "sources" ? <Search size={15} /> : <CheckCircle2 size={15} />}</span>
-                      <div>
-                        <strong>{event.label}</strong>
-                        {event.detail && <small>{event.detail}</small>}
-                      </div>
-                    </div>
-                  ))
-                ) : (
-                  <div className="processEvent">
-                    <span>{loading ? <Loader2 className="spin" size={15} /> : <CheckCircle2 size={15} />}</span>
-                    <div>
-                      <strong>{loading ? "等待模型返回首个片段" : "尚未产生处理事件"}</strong>
-                      <small>提交问诊后会实时显示检索、工具调用和生成状态。</small>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </details>
-
-            <div className="answerReport">
-              <div className="reportHeader">
-                <div>
-                  <span>问诊生成结果</span>
-                  <strong>{loading ? "正在生成..." : "已生成"}</strong>
-                </div>
-                {loading && <Loader2 className="spin" size={18} />}
-              </div>
-              <FormattedAnswer text={response.answer} loading={loading} />
+        <div className="aiMessageList">
+          {chatMessages.length ? chatMessages.map((item) => (
+            <div className={`messageBubble ${item.sender === "user" ? "mine" : "aiBubble"}`} key={item.id}>
+              <span>{item.sender === "user" ? "我" : "AI 问诊助手"} · {formatDateTime(item.created_at)}</span>
+              {item.sender === "ai" ? <FormattedAnswer text={item.content} loading={loading && !item.content} /> : <p>{item.content}</p>}
             </div>
+          )) : (
+            <div className="emptyState compactEmpty">
+              <MessageSquareText size={28} />
+              <p>选择历史问诊或开始新的对话。</p>
+            </div>
+          )}
+        </div>
 
+        {response && (
+          <>
+            <ReferenceSources response={response} />
+            <details className="collapsiblePanel streamProcess aiInsightPanel">
+          <summary className="processHeader">
+            <span>
+              <Sparkles size={18} />
+                <strong>{loading ? "AI 正在处理问诊" : "本轮 AI 调用流程"}</strong>
+            </span>
+            <ChevronDown size={18} />
+          </summary>
             <div className="intentGrid">
               <div>
                 <span>意图分类</span>
@@ -1511,59 +1781,92 @@ function Consultation() {
                 <strong>{response.cache_hit_level}</strong>
               </div>
             </div>
-            {!!response.tool_calls?.length && (
-              <details className="collapsiblePanel toolCallList">
-                <summary>
-                  <span>
-                    <Database size={17} />
-                    <strong>工具调用明细</strong>
-                  </span>
-                  <ChevronDown size={18} />
-                </summary>
-                {response.tool_calls.map((toolCall, index) => (
-                  <div key={`${String(toolCall.tool_name || "tool")}-${index}`}>
-                    <strong>{toolLabel(String(toolCall.tool_name || "tool"))}</strong>
-                    <span>{summarizeToolCall(toolCall)}</span>
-                  </div>
-                ))}
-              </details>
-            )}
-            <details className="collapsiblePanel citationList">
-              <summary>
-                <span>
-                  <BookOpenCheck size={17} />
-                  <strong>参考来源</strong>
-                  <small>{response.citations.length ? `${response.citations.length} 条` : "暂无"}</small>
-                </span>
-                <ChevronDown size={18} />
-              </summary>
-              {response.citations.length ? response.citations.map((citation, index) => (
-                <div key={`${citation.title || "source"}-${index}`}>
-                  <strong>{citation.title || `知识库片段 ${index + 1}`}</strong>
-                  {(citation.page || citation.chunk_index !== undefined) && (
-                    <small>
-                      {citation.page ? `第 ${citation.page} 页` : ""}
-                      {citation.page && citation.chunk_index !== undefined ? " / " : ""}
-                      {citation.chunk_index !== undefined ? `片段 ${citation.chunk_index}` : ""}
-                    </small>
-                  )}
-                  <span>{citation.snippet || "该来源未提供摘要。"}</span>
-                  {citation.source_url && <a href={citation.source_url} rel="noreferrer" target="_blank">查看来源</a>}
-                </div>
-              )) : (
-                <p className="mutedText">本次回答暂未返回明确文件来源。</p>
-              )}
-            </details>
+            <AiCallFlow response={response} processEvents={processEvents} loading={loading} />
+          </details>
           </>
-        ) : (
-          <div className="emptyState">
-            <MessageSquareText size={28} />
-            <p>提交问诊后，这里会显示 AI 回复、意图识别和引用依据。</p>
-          </div>
         )}
+
+        <div className="aiComposer">
+          <label className="fieldLabel" htmlFor="consultationInput">问诊内容</label>
+          <textarea
+            id="consultationInput"
+            onChange={(event) => setMessage(event.target.value)}
+            placeholder="继续描述症状、护理观察、用药疑问或检查摘要。"
+            value={message}
+          />
+          <label className="uploadControl wideUpload" htmlFor="consultationFiles">
+            <UploadCloud size={20} />
+            <span>
+              <strong>选择问诊文件</strong>
+              <small>{attachments.length ? `已选择 ${attachments.length} 个文件` : "支持多选文本、检查摘要、护理记录"}</small>
+            </span>
+            <input id="consultationFiles" multiple onChange={(event) => void handleConsultationFiles(event.target.files)} type="file" />
+          </label>
+          <div className="attachmentList">
+            {attachments.map((attachment) => (
+              <span key={`${attachment.file_name}-${attachment.file_type}`}>
+                {attachment.file_name} / {attachment.content ? `${attachment.content.length} 字` : "仅记录文件信息"}
+              </span>
+            ))}
+          </div>
+          <div className="buttonRow">
+            <button className="primaryButton" disabled={loading || !message.trim()} onClick={submitConsultation}>
+              {loading ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
+              <span>{loading ? "问诊中..." : selectedSessionId ? "继续发送" : "开始问诊"}</span>
+            </button>
+            <button
+              className="secondaryButton"
+              onClick={() => setMessage("护理人员如何预防术后长期卧床导致的压疮？")}
+              type="button"
+            >
+              护理示例
+            </button>
+          </div>
+        </div>
+        {error && <p className="notice">{error}</p>}
       </article>
     </section>
   );
+
+  function responseFromStoredMessage(messageItem: AiConversationMessage): ChatResponse {
+    const metadata = asRecord(messageItem.metadata_json);
+    const citations = Array.isArray(metadata.citations) ? metadata.citations as ChatResponse["citations"] : [];
+    return {
+      answer: messageItem.content,
+      intent: {
+        category: messageItem.intent_category || "medical_consult",
+        subcategory: messageItem.intent_subcategory || "",
+        confidence: messageItem.intent_confidence || 0
+      },
+      cache_hit_level: messageItem.cache_hit_level || "stored",
+      citations,
+      task_type: String(metadata.task_type || "knowledge_qa"),
+      run_id: typeof metadata.run_id === "string" ? metadata.run_id : null,
+      trace_id: typeof metadata.trace_id === "string" ? metadata.trace_id : null,
+      session_id: messageItem.session_id || selectedSessionId,
+      tool_calls: Array.isArray(metadata.tool_calls) ? metadata.tool_calls as Array<Record<string, unknown>> : [],
+      steps: Array.isArray(metadata.steps) ? metadata.steps as Array<Record<string, unknown>> : [],
+      intermediate_conclusions: Array.isArray(metadata.intermediate_conclusions)
+        ? metadata.intermediate_conclusions as Array<Record<string, unknown>>
+        : []
+    };
+  }
+}
+
+function formatDateTime(value: string | null | undefined) {
+  if (!value) {
+    return "暂无时间";
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  return date.toLocaleString("zh-CN", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  });
 }
 
 function emptyStreamingResponse(): ChatResponse {
@@ -1598,6 +1901,313 @@ function parseSsePayload(rawEvent: string): Record<string, unknown> | null {
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function ReferenceSources({ response }: { response: ChatResponse }) {
+  const sources = collectCitationSources(response);
+
+  return (
+    <section className="referenceSourcesPanel" aria-label="参考知识库来源">
+      <div className="referenceHeader">
+        <span>
+          <BookOpenCheck size={18} />
+          <strong>参考知识库来源</strong>
+        </span>
+        <small>{sources.length ? `检索到 ${sources.length} 个文档` : "暂无明确来源"}</small>
+      </div>
+      {sources.length ? (
+        <div className="citationList referenceCitationList">
+          {sources.map((source, index) => (
+            <div key={`${sourceTitle(source)}-${source.doc_id || ""}-${source.source || ""}-${index}`}>
+              <strong>{sourceTitle(source)}</strong>
+              <small>{sourceMeta(source)}</small>
+              {source.source_url && <a href={source.source_url} rel="noreferrer" target="_blank">打开来源</a>}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="mutedText referenceEmpty">本轮回复暂未返回明确的知识库文件来源。</p>
+      )}
+    </section>
+  );
+}
+
+function collectCitationSources(response: ChatResponse): CitationSource[] {
+  const candidates: CitationSource[] = [...(response.citations || [])];
+
+  for (const step of response.steps || []) {
+    const output = asRecord(step.output_data);
+    candidates.push(...extractSourcesFromOutput(output));
+  }
+
+  for (const toolCall of response.tool_calls || []) {
+    const output = asRecord(toolCall.output);
+    candidates.push(...extractSourcesFromOutput(output));
+  }
+
+  return groupCitationDocuments(candidates.map(normalizeCitationSource)).slice(0, 12);
+}
+
+function groupCitationDocuments(sources: CitationSource[]): CitationSource[] {
+  const grouped = new Map<string, CitationSource>();
+  for (const source of sources) {
+    const key = citationDocumentKey(source);
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.hit_count = (existing.hit_count || 1) + 1;
+      if (!existing.source_url && source.source_url) {
+        existing.source_url = source.source_url;
+      }
+      if (!existing.doc_id && source.doc_id) {
+        existing.doc_id = source.doc_id;
+      }
+      continue;
+    }
+    grouped.set(key, {
+      title: sourceTitle(source),
+      doc: source.doc,
+      source: source.source,
+      source_url: source.source_url,
+      doc_id: source.doc_id,
+      hit_count: source.hit_count || 1
+    });
+  }
+  return Array.from(grouped.values());
+}
+
+function citationDocumentKey(source: CitationSource) {
+  return String(source.doc_id || source.doc || source.source || source.source_url || sourceTitle(source)).trim().toLowerCase();
+}
+
+function countCitationDocuments(sources: CitationSource[]) {
+  return groupCitationDocuments(sources.map(normalizeCitationSource)).length;
+}
+
+function extractSourcesFromOutput(output: Record<string, unknown>): CitationSource[] {
+  const sources = Array.isArray(output.sources) ? output.sources.map(asRecord) : [];
+  const chunks = Array.isArray(output.chunks) ? output.chunks.map(asRecord) : [];
+  const chunkSources = chunks.map((chunk) => {
+    const metadata = asRecord(chunk.metadata);
+    return {
+      title: String(metadata.title || metadata.file_name || metadata.filename || metadata.source || "知识库文档"),
+      doc: String(metadata.file_name || metadata.filename || metadata.title || metadata.source || ""),
+      source: String(metadata.source || metadata.file_name || metadata.filename || ""),
+      doc_id: metadata.doc_id as string | number | undefined,
+      page: metadata.page_label as string | number | undefined || metadata.page as string | number | undefined,
+      chunk_index: metadata.chunk_index as string | number | undefined,
+      snippet: String(chunk.content || chunk.page_content || chunk.text || "")
+    };
+  });
+  return [...sources, ...chunkSources];
+}
+
+function normalizeCitationSource(value: CitationSource | Record<string, unknown>): CitationSource {
+  const source = asRecord(value);
+  return {
+    title: stringOrUndefined(source.title) || stringOrUndefined(source.doc) || stringOrUndefined(source.source),
+    doc: stringOrUndefined(source.doc),
+    source: stringOrUndefined(source.source),
+    source_url: stringOrUndefined(source.source_url) || stringOrUndefined(source.url),
+    doc_id: source.doc_id as string | number | undefined,
+    snippet: stringOrUndefined(source.snippet) || stringOrUndefined(source.content),
+    content: stringOrUndefined(source.content),
+    page: source.page as string | number | undefined,
+    chunk_index: source.chunk_index as string | number | undefined
+  };
+}
+
+function stringOrUndefined(value: unknown) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function sourceTitle(source: CitationSource) {
+  return source.title || source.doc || source.source || (source.doc_id ? `知识库文档 ${source.doc_id}` : "知识库文档");
+}
+
+function sourceMeta(source: CitationSource) {
+  const parts = [];
+  if (source.doc_id) {
+    parts.push(`文档ID：${source.doc_id}`);
+  }
+  if (source.source && source.source !== sourceTitle(source)) {
+    parts.push(source.source);
+  }
+  return parts.join(" / ") || "知识库检索来源";
+}
+
+function AiCallFlow({
+  response,
+  processEvents,
+  loading
+}: {
+  response: ChatResponse;
+  processEvents: StreamProcessEvent[];
+  loading: boolean;
+}) {
+  const items = buildAiFlowItems(response, processEvents, loading);
+  return (
+    <div className="aiFlowSurface">
+      <div className="aiRunMeta">
+        <span>任务链路：{taskTypeLabel(response.task_type || "knowledge_qa")}</span>
+        <span>运行：{response.run_id || "本地流式会话"}</span>
+      </div>
+      <div className="processTimeline aiCallTimeline">
+        {items.map((event) => (
+          <div className={`processEvent ${event.type} ${event.status}`} key={event.id}>
+            <span>{flowIcon(event)}</span>
+            <div>
+              <strong>{event.label}</strong>
+              {event.detail && <small>{event.detail}</small>}
+            </div>
+            <em>{flowStatusLabel(event.status)}</em>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function buildAiFlowItems(response: ChatResponse, processEvents: StreamProcessEvent[], loading: boolean): AiFlowItem[] {
+  const liveItems = processEvents.map((event) => ({
+    id: event.id,
+    type: event.type,
+    label: event.label,
+    detail: event.detail,
+    status: event.status || "completed"
+  }));
+  const derivedItems: AiFlowItem[] = [];
+
+  (response.steps || []).forEach((step, index) => {
+    const stepName = String(step.step_name || step.name || "unknown_step");
+    const output = asRecord(step.output_data);
+    derivedItems.push({
+      id: `step-${index}-${stepName}`,
+      type: stepName.includes("search") ? "tool" : "status",
+      label: stepLabel(stepName),
+      detail: summarizeStep(stepName, output),
+      status: String(step.status || "completed")
+    });
+  });
+
+  (response.tool_calls || []).forEach((toolCall, index) => {
+    const toolName = String(toolCall.tool_name || "tool");
+    derivedItems.push({
+      id: `tool-${index}-${toolName}`,
+      type: "tool",
+      label: toolLabel(toolName),
+      detail: summarizeToolCall(toolCall),
+      status: String(toolCall.status || "completed")
+    });
+  });
+
+  if (response.citations?.length) {
+    const documentCount = countCitationDocuments(response.citations);
+    derivedItems.push({
+      id: "sources-final",
+      type: "sources",
+      label: "参考来源",
+      detail: documentCount ? `${documentCount} 个知识库文档参与回答` : "未检索到明确来源",
+      status: "completed"
+    });
+  }
+
+  const items = liveItems.length ? [...liveItems, ...derivedItems] : derivedItems;
+  const deduped = dedupeFlowItems(items);
+  if (deduped.length) {
+    return deduped;
+  }
+  return [{
+    id: "waiting",
+    type: "status",
+    label: loading ? "等待 AI 服务响应" : "暂无可展示调用流程",
+    detail: loading ? "正在连接问诊服务并准备接收流式事件" : "新的问诊开始后会显示实时调用步骤",
+    status: loading ? "running" : "pending"
+  }];
+}
+
+function dedupeFlowItems(items: AiFlowItem[]) {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const key = `${item.type}:${item.label}:${item.detail}:${item.status}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  }).slice(-18);
+}
+
+function flowIcon(event: AiFlowItem) {
+  if (event.status === "running") {
+    return <Loader2 className="spin" size={15} />;
+  }
+  if (event.type === "tool") {
+    return <Database size={15} />;
+  }
+  if (event.type === "sources") {
+    return <Search size={15} />;
+  }
+  if (event.type === "error") {
+    return <Activity size={15} />;
+  }
+  return <CheckCircle2 size={15} />;
+}
+
+function flowStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    running: "进行中",
+    completed: "完成",
+    success: "完成",
+    failed: "失败",
+    pending: "等待"
+  };
+  return labels[status] || statusLabel(status);
+}
+
+function stepLabel(stepName: string) {
+  const labels: Record<string, string> = {
+    memory_read: "读取历史对话",
+    intent_recognition: "识别问诊意图",
+    question_classification: "判断问题类型",
+    question_rewrite: "改写检索问题",
+    knowledge_search: "调用知识库检索",
+    result_evaluation: "评估检索结果",
+    answer_generation: "生成问诊回复",
+    memory_write: "保存对话记忆",
+    clarification: "判断是否需要追问"
+  };
+  return labels[stepName] || stepName.replaceAll("_", " ");
+}
+
+function taskTypeLabel(taskType: string) {
+  const labels: Record<string, string> = {
+    knowledge_qa: "知识库问答",
+    reasoning: "医学推理",
+    chitchat: "基础对话",
+    admin_copilot: "管理助手",
+    knowledge_inspection: "知识巡检"
+  };
+  return labels[taskType] || taskType;
+}
+
+function summarizeStep(stepName: string, output: Record<string, unknown>) {
+  if (stepName === "memory_read") {
+    return output.has_history ? "已读取当前问诊的上下文历史" : "当前会话暂无可用历史";
+  }
+  if (stepName === "question_rewrite") {
+    return String(output.rewritten_question || "已完成检索问题整理");
+  }
+  if (stepName === "knowledge_search") {
+    const documents = countCitationDocuments(extractSourcesFromOutput(output));
+    return documents ? `检索到 ${documents} 个候选文档` : "未检索到候选文档";
+  }
+  if (stepName === "result_evaluation") {
+    return output.is_sufficient === false ? "检索依据不足，后续回答会保守处理" : "检索依据通过评估";
+  }
+  if (stepName === "answer_generation") {
+    return "已汇总上下文、知识库文档和问诊问题生成回复";
+  }
+  return "步骤已执行";
 }
 
 function FormattedAnswer({ text, loading }: { text: string; loading: boolean }) {
@@ -2865,7 +3475,7 @@ function Verification() {
 
 function Knowledge() {
   const [knowledgeForm, setKnowledgeForm] = useState({
-    collection: collections[0].key,
+    collection: defaultKnowledgeCollection,
     title: "",
     content: "",
     file_name: "",
@@ -2873,6 +3483,9 @@ function Knowledge() {
     file_content_base64: ""
   });
   const [uploadedKnowledge, setUploadedKnowledge] = useState<AdminKnowledgeItem[]>([]);
+  const [recentUploadedKnowledge, setRecentUploadedKnowledge] = useState<AdminKnowledgeItem[]>([]);
+  const [recentUploadPage, setRecentUploadPage] = useState(1);
+  const [allKnowledgePage, setAllKnowledgePage] = useState(1);
   const [notice, setNotice] = useState("");
   const [loading, setLoading] = useState(false);
 
@@ -2904,6 +3517,36 @@ function Knowledge() {
     void loadKnowledgeItems();
   }, []);
 
+  const recentUploadPageCount = Math.max(1, Math.ceil(recentUploadedKnowledge.length / recentKnowledgePageSize));
+  const allKnowledgePageCount = Math.max(1, Math.ceil(uploadedKnowledge.length / allKnowledgePageSize));
+  const pagedRecentUploads = recentUploadedKnowledge.slice(
+    (recentUploadPage - 1) * recentKnowledgePageSize,
+    recentUploadPage * recentKnowledgePageSize
+  );
+  const pagedAllKnowledge = uploadedKnowledge.slice(
+    (allKnowledgePage - 1) * allKnowledgePageSize,
+    allKnowledgePage * allKnowledgePageSize
+  );
+
+  useEffect(() => {
+    setRecentUploadPage((page) => Math.min(page, recentUploadPageCount));
+  }, [recentUploadPageCount]);
+
+  useEffect(() => {
+    setAllKnowledgePage((page) => Math.min(page, allKnowledgePageCount));
+  }, [allKnowledgePageCount]);
+
+  useEffect(() => {
+    const hasPending = uploadedKnowledge.some((item) => ["pending", "indexing"].includes(item.rag_status));
+    if (!hasPending) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      void loadKnowledgeItems();
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [uploadedKnowledge]);
+
   function readFileAsBase64(file: File): Promise<string> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -2917,51 +3560,70 @@ function Knowledge() {
   }
 
   async function handleKnowledgeFile(files: FileList | null) {
-    const file = files?.[0];
-    if (!file) {
-      return;
-    }
-    const isReadableText =
-      file.type.startsWith("text/") ||
-      file.name.endsWith(".txt") ||
-      file.name.endsWith(".md") ||
-      file.name.endsWith(".csv") ||
-      file.name.endsWith(".json");
-    const [content, fileContentBase64] = await Promise.all([
-      isReadableText ? file.text() : Promise.resolve(""),
-      readFileAsBase64(file)
-    ]);
-    setKnowledgeForm({
-      ...knowledgeForm,
-      title: knowledgeForm.title || file.name.replace(/\.[^.]+$/, ""),
-      content: content.slice(0, 20000) || knowledgeForm.content,
-      file_name: file.name,
-      file_type: file.type || "未知类型",
-      file_content_base64: fileContentBase64
-    });
-  }
-
-  async function uploadKnowledge() {
-    if (!knowledgeForm.title.trim() || (!knowledgeForm.content.trim() && !knowledgeForm.file_content_base64)) {
+    if (!files?.length) {
       return;
     }
     setLoading(true);
     setNotice("");
     try {
-      const created = await requestJson<AdminKnowledgeItem>("/api/v1/admin/knowledge-items", {
-        method: "POST",
-        body: JSON.stringify({
-          collection: knowledgeForm.collection,
-          title: knowledgeForm.title.trim(),
-          content: knowledgeForm.content.trim(),
-          file_name: knowledgeForm.file_name,
-          file_type: knowledgeForm.file_type,
-          file_content_base64: knowledgeForm.file_content_base64
+      const selectedFiles = await Promise.all(
+        Array.from(files).map(async (file) => {
+          const isReadableText =
+            file.type.startsWith("text/") ||
+            file.name.endsWith(".txt") ||
+            file.name.endsWith(".md") ||
+            file.name.endsWith(".csv") ||
+            file.name.endsWith(".json");
+          const [content, fileContentBase64] = await Promise.all([
+            isReadableText ? file.text() : Promise.resolve(""),
+            readFileAsBase64(file)
+          ]);
+          return {
+            title: file.name.replace(/\.[^.]+$/, ""),
+            content: content.slice(0, 20000),
+            file_name: file.name,
+            file_type: file.type || "未知类型",
+            file_content_base64: fileContentBase64
+          };
         })
+      );
+      setKnowledgeForm({
+        ...knowledgeForm,
+        title: "",
+        content: "",
+        file_name: selectedFiles.map((file) => file.file_name).join(", "),
+        file_type: selectedFiles.length === 1 ? selectedFiles[0].file_type : `${selectedFiles.length} 个文件`,
+        file_content_base64: ""
       });
-      setUploadedKnowledge((current) => [created, ...current]);
-      setKnowledgeForm({ ...knowledgeForm, title: "", content: "", file_name: "", file_type: "", file_content_base64: "" });
-      setNotice(`知识已写入 RAG 知识库，共生成 ${created.rag_chunk_count} 个片段。`);
+      const createdItems: AdminKnowledgeItem[] = [];
+      for (const file of selectedFiles) {
+        const created = await requestJson<AdminKnowledgeItem>("/api/v1/admin/knowledge-items", {
+          method: "POST",
+          body: JSON.stringify({
+            collection: defaultKnowledgeCollection,
+            title: file.title,
+            content: file.content,
+            file_name: file.file_name,
+            file_type: file.file_type,
+            file_content_base64: file.file_content_base64
+          })
+        });
+        createdItems.push(created);
+      }
+      const latestCreatedItems = [...createdItems].reverse();
+      setUploadedKnowledge((current) => [...latestCreatedItems, ...current]);
+      setRecentUploadedKnowledge((current) => [...latestCreatedItems, ...current]);
+      setRecentUploadPage(1);
+      setAllKnowledgePage(1);
+      setKnowledgeForm({
+        collection: defaultKnowledgeCollection,
+        title: "",
+        content: "",
+        file_name: "",
+        file_type: "",
+        file_content_base64: ""
+      });
+      setNotice(`已提交 ${createdItems.length} 个后台解析任务。解析完成后会自动显示片段数量。`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "上传知识失败。");
     } finally {
@@ -2978,92 +3640,103 @@ function Knowledge() {
         throw new Error(message || `接口返回 ${response.status}`);
       }
       setUploadedKnowledge((current) => current.filter((item) => item.id !== itemId));
+      setRecentUploadedKnowledge((current) => current.filter((item) => item.id !== itemId));
       setNotice("知识已从平台和 RAG 知识库删除。");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "删除知识失败。");
     }
   }
 
+  function knowledgeFileMeta(item: AdminKnowledgeItem) {
+    return [
+      item.file_name || "未命名文件",
+      knowledgeStatusLabel(item.rag_status),
+      `${item.rag_chunk_count} 个片段`,
+      formatDateTime(item.created_at)
+    ].join(" / ");
+  }
+
+  function renderKnowledgeItem(item: AdminKnowledgeItem) {
+    return (
+      <div className="miniItem" key={item.id}>
+        <div>
+          <strong>{item.title || item.file_name || "未命名知识文件"}</strong>
+          <span>{knowledgeFileMeta(item)}</span>
+        </div>
+        <div className="inlineActions">
+          <button title="删除知识" onClick={() => void deleteKnowledgeItem(item.id)} type="button">
+            <Trash2 size={17} />
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  function renderPager(page: number, totalPages: number, onPageChange: (page: number) => void) {
+    return (
+      <div className="pager knowledgePager">
+        <button disabled={page <= 1} onClick={() => onPageChange(page - 1)} type="button">上一页</button>
+        <span>{page} / {totalPages}</span>
+        <button disabled={page >= totalPages} onClick={() => onPageChange(page + 1)} type="button">下一页</button>
+      </div>
+    );
+  }
+
   return (
-    <section className="dashboardGrid">
-      <article className="panel wide">
-        <div className="panelHeader">
-          <div>
-            <h2>知识库上传</h2>
-            <p>管理员可维护五类问诊和平台知识，供 智能问诊检索使用。</p>
+    <section className="knowledgeLayout">
+      <div className="knowledgeMainColumn">
+        <article className="panel">
+          <div className="panelHeader">
+            <div>
+              <h2>知识库上传</h2>
+              <p>上传后统一进入知识库后台解析，不再按文件类型拆分入口。</p>
+            </div>
+            <Database size={22} />
           </div>
-          <Database size={22} />
-        </div>
-        {notice && <p className="notice">{notice}</p>}
-        <div className="formGrid">
-          <select value={knowledgeForm.collection} onChange={(event) => setKnowledgeForm({ ...knowledgeForm, collection: event.target.value })}>
-            {collections.map((collection) => (
-              <option key={collection.key} value={collection.key}>{collection.name}</option>
-            ))}
-          </select>
-          <input placeholder="知识标题" value={knowledgeForm.title} onChange={(event) => setKnowledgeForm({ ...knowledgeForm, title: event.target.value })} />
-        </div>
-        <label className="uploadControl wideUpload" htmlFor="knowledgeFileUpload">
-          <UploadCloud size={20} />
-          <span>
-            <strong>上传医学知识文件</strong>
-            <small>{knowledgeForm.file_name || "支持医学指南、护理规范、问诊资料等文件"}</small>
-          </span>
-          <input id="knowledgeFileUpload" onChange={(event) => void handleKnowledgeFile(event.target.files)} type="file" />
-        </label>
-        <textarea placeholder="知识内容" value={knowledgeForm.content} onChange={(event) => setKnowledgeForm({ ...knowledgeForm, content: event.target.value })} />
-        <button className="primaryButton" disabled={loading || !knowledgeForm.title.trim() || (!knowledgeForm.content.trim() && !knowledgeForm.file_content_base64)} onClick={() => void uploadKnowledge()} type="button">
-          {loading ? <Loader2 className="spin" size={18} /> : <Send size={18} />}
-          <span>上传知识</span>
-        </button>
-      </article>
+          {notice && <p className="notice">{notice}</p>}
+          <div className="knowledgeUploadControls">
+            <label className={`uploadControl uploadButtonControl ${loading ? "disabled" : ""}`} htmlFor="knowledgeFileUpload">
+              {loading ? <Loader2 className="spin" size={20} /> : <UploadCloud size={20} />}
+              <span>
+                <strong>{loading ? "提交中..." : "上传知识库文件"}</strong>
+                <small>{knowledgeForm.file_name || "支持单个或多个文件"}</small>
+              </span>
+              <input disabled={loading} id="knowledgeFileUpload" multiple onChange={(event) => void handleKnowledgeFile(event.target.files)} type="file" />
+            </label>
+          </div>
+        </article>
 
-      <article className="panel">
-        <div className="panelHeader compact">
-          <h2>五类内容</h2>
-          <BookOpenCheck size={20} />
-        </div>
-        <div className="collectionGrid compactCollections">
-          {collections.map((collection) => (
-            <article className="collectionCard" key={collection.key}>
-              <BookOpenCheck size={20} />
-              <strong>{collection.name}</strong>
-              <span>{collection.key}</span>
-              <small>{collection.chunks.toLocaleString()} 条 / {collection.freshness}</small>
-            </article>
-          ))}
-        </div>
-      </article>
+        <article className="panel">
+          <div className="panelHeader compact">
+            <div>
+              <h2>已上传知识库文件</h2>
+              <p>展示平台内所有已上传文件，每页 5 个。</p>
+            </div>
+            <button className="iconButton" onClick={() => void loadKnowledgeItems()} title="刷新知识库上传状态" type="button">
+              <RefreshCw size={19} />
+            </button>
+          </div>
+          <div className="miniList">
+            {pagedAllKnowledge.map(renderKnowledgeItem)}
+            {uploadedKnowledge.length === 0 && <p className="mutedText">暂无已上传知识库文件。</p>}
+          </div>
+          {uploadedKnowledge.length > allKnowledgePageSize && renderPager(allKnowledgePage, allKnowledgePageCount, setAllKnowledgePage)}
+        </article>
+      </div>
 
-      <article className="panel wide">
+      <article className="panel knowledgeRecentPanel">
         <div className="panelHeader compact">
-          <h2>本次上传记录</h2>
+          <div>
+            <h2>本次上传记录</h2>
+            <p>展示本轮页面操作上传的文件，每页 3 个。</p>
+          </div>
           <ClipboardList size={20} />
         </div>
         <div className="miniList">
-          {uploadedKnowledge.map((item) => (
-            <div className="miniItem" key={item.id}>
-              <div>
-                <strong>{item.title}</strong>
-                <span>
-                  {collections.find((collection) => collection.key === item.collection)?.name || item.collection}
-                  {" / "}
-                  {item.file_name || "手动录入"}
-                  {" / "}
-                  {statusLabel(item.rag_status)}
-                  {" / "}
-                  {item.rag_chunk_count} 个片段
-                </span>
-              </div>
-              <div className="inlineActions">
-                <button title="删除知识" onClick={() => void deleteKnowledgeItem(item.id)} type="button">
-                  <Trash2 size={17} />
-                </button>
-              </div>
-            </div>
-          ))}
-          {uploadedKnowledge.length === 0 && <p className="mutedText">暂无本次上传记录。</p>}
+          {pagedRecentUploads.map(renderKnowledgeItem)}
+          {recentUploadedKnowledge.length === 0 && <p className="mutedText">暂无本次上传记录。</p>}
         </div>
+        {recentUploadedKnowledge.length > recentKnowledgePageSize && renderPager(recentUploadPage, recentUploadPageCount, setRecentUploadPage)}
       </article>
     </section>
   );
