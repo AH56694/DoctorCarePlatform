@@ -14,8 +14,9 @@ class AiChatRequest(BaseModel):
     message: str = Field(min_length=1)
     conversation_id: str | None = None
     user_id: str | None = None
+    context: str = Field(default="", max_length=24000)
     is_admin: bool = False
-    attachments: list[AiAttachment] = Field(default_factory=list)
+    attachments: list[AiAttachment] = Field(default_factory=list, max_length=8)
 
 
 class IntentResult(BaseModel):

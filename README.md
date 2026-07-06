@@ -190,8 +190,10 @@ Python AI 服务兼容表包括：
 | `USE_MILVUS` | `false` 时使用 FAISS 持久化目录，`true` 时使用 Milvus |
 | `VECTOR_STORE_PERSIST_DIR` | FAISS 索引持久化目录 |
 | `VECTOR_STORE_COLLECTION_NAME` | 向量集合名称 |
+| `VECTOR_STORE_METRIC_TYPE` | 向量分数度量，默认 `COSINE`；`L2` 会转换为统一相似度 |
 | `EMBEDDING_MODEL`, `LOCAL_EMBEDDING_MODEL_PATH` | Embedding 模型选择与本地路径 |
 | `LLM_FALLBACK_PROVIDERS` | Python 服务 LLM 降级顺序，默认 `ollama,openai_compatible,retrieval` |
+| `MEMORY_*`, `LLM_*_MAX_CHARS` | 会话压缩、持久化恢复和提示词各层上下文预算 |
 | `OLLAMA_BASE_URL`, `OLLAMA_MODEL` | 本地 Ollama 模型配置 |
 | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_API_KEY`, `OPENAI_COMPATIBLE_MODEL` | OpenAI-compatible 模型配置 |
 | `DASHSCOPE_API_KEY`, `DASHSCOPE_MODEL` | DashScope/Qwen 配置 |

@@ -61,3 +61,16 @@ def test_agent_response_maps_trace_and_tool_calls(monkeypatch) -> None:
     assert response.run_id == "run-1"
     assert response.trace_id == "trace-1"
     assert response.tool_calls == [{"tool_name": "knowledge_search", "status": "success"}]
+
+
+def test_agent_payload_forwards_explicit_context() -> None:
+    payload = RagServiceClient()._agent_payload(
+        AiChatRequest(
+            message="它需要继续观察吗？",
+            conversation_id="session-1",
+            context="患者上一轮描述了术后疼痛。",
+        )
+    )
+
+    assert payload["conversation_id"] == "session-1"
+    assert payload["context"] == "患者上一轮描述了术后疼痛。"

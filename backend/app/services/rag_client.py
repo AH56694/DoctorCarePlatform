@@ -79,7 +79,7 @@ class RagServiceClient:
     async def _legacy_ask(self, payload: AiChatRequest) -> dict[str, Any]:
         request_payload: dict[str, Any] = {
             "question": payload.message,
-            "context": "",
+            "context": payload.context,
             "is_admin": payload.is_admin,
         }
         if payload.conversation_id:
@@ -93,7 +93,7 @@ class RagServiceClient:
     def _agent_payload(self, payload: AiChatRequest) -> dict[str, Any]:
         request_payload: dict[str, Any] = {
             "input": payload.message,
-            "context": "",
+            "context": payload.context,
             "is_admin": payload.is_admin,
         }
         if payload.conversation_id:

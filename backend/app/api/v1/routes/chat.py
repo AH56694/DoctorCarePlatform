@@ -13,6 +13,9 @@ from backend.app.services.rag_client import RagServiceClient
 
 router = APIRouter()
 
+MAX_ATTACHMENT_CONTEXT_CHARS = 12000
+MAX_ATTACHMENT_ITEM_CHARS = 4000
+
 
 @router.get("/sessions", response_model=list[AiSessionRead])
 async def list_sessions(
@@ -49,60 +52,22 @@ async def list_session_messages(
 
 @router.post("/chat", response_model=AiChatResponse)
 async def chat(payload: AiChatRequest, db: Session = Depends(get_db)) -> AiChatResponse:
-    ai_payload = payload.model_copy(update={"message": _message_with_attachments(payload)})
+    session = _prepare_ai_session(db, payload)
+    effective_payload = payload.model_copy(update={"conversation_id": str(session.id)})
+    ai_payload = effective_payload.model_copy(update={"message": _message_with_attachments(effective_payload)})
     response = await RagServiceClient().chat(ai_payload)
-    session = _get_or_create_ai_session(db, payload, response)
-    user_message = AiMessage(
-        session_id=session.id,
-        conversation_id=payload.conversation_id,
-        sender="user",
-        content=payload.message,
-        user_message=payload.message,
-        assistant_message="",
-        intent_category=response.intent.category,
-        intent_subcategory=response.intent.subcategory,
-        intent_confidence=response.intent.confidence,
-        cache_hit_level=response.cache_hit_level,
-        metadata_json={"attachments": _attachment_metadata(payload)},
-    )
-    assistant_message = AiMessage(
-        session_id=session.id,
-        conversation_id=payload.conversation_id,
-        sender="ai",
-        content=response.answer,
-        user_message=payload.message,
-        assistant_message=response.answer,
-        intent_category=response.intent.category,
-        intent_subcategory=response.intent.subcategory,
-        intent_confidence=response.intent.confidence,
-        cache_hit_level=response.cache_hit_level,
-        metadata_json={
-            "citations": [_citation_to_dict(citation) for citation in response.citations],
-            "source_attachments": _attachment_metadata(payload),
-            "task_type": response.task_type,
-            "run_id": response.run_id,
-            "trace_id": response.trace_id,
-            "steps": response.steps,
-            "tool_calls": response.tool_calls,
-            "intermediate_conclusions": response.intermediate_conclusions,
-        },
-    )
-    if response.intent.category == "emergency":
-        session.risk_flag = "emergency"
-    session.summary = response.answer[:500]
-    db.add_all([user_message, assistant_message])
-    db.commit()
-    db.refresh(user_message)
-    db.refresh(assistant_message)
-    _cache_ai_messages(session, user_message, assistant_message)
+    _persist_ai_messages(db, effective_payload, response, session=session)
     return response.model_copy(update={"session_id": session.id})
 
 
 @router.post("/chat/stream")
 async def chat_stream(payload: AiChatRequest, db: Session = Depends(get_db)) -> StreamingResponse:
+    session = _prepare_ai_session(db, payload)
+    effective_payload = payload.model_copy(update={"conversation_id": str(session.id)})
+
     async def event_stream():
         client = RagServiceClient()
-        ai_payload = payload.model_copy(update={"message": _message_with_attachments(payload)})
+        ai_payload = effective_payload.model_copy(update={"message": _message_with_attachments(effective_payload)})
         stream_state: dict[str, Any] = {
             "answer_parts": [],
             "sources": [],
@@ -126,8 +91,8 @@ async def chat_stream(payload: AiChatRequest, db: Session = Depends(get_db)) -> 
                 await _hydrate_final_run_state(client, str(run_id), stream_state)
 
             response = _response_from_stream_state(client, stream_state)
-            session = _persist_ai_messages(db, payload, response)
-            final_response = response.model_copy(update={"session_id": session.id})
+            persisted_session = _persist_ai_messages(db, effective_payload, response, session=session)
+            final_response = response.model_copy(update={"session_id": persisted_session.id})
             yield _sse({"type": "final", "response": final_response.model_dump()})
         except Exception as exc:
             yield _sse({"type": "error", "message": f"问诊流式响应失败：{exc}"})
@@ -148,14 +113,19 @@ def _message_with_attachments(payload: AiChatRequest) -> str:
         return payload.message
 
     attachment_sections = []
+    remaining_chars = MAX_ATTACHMENT_CONTEXT_CHARS
     for attachment in payload.attachments:
+        if remaining_chars <= 0:
+            break
         content = attachment.content.strip()
         if not content:
             continue
+        excerpt = content[: min(MAX_ATTACHMENT_ITEM_CHARS, remaining_chars)]
+        remaining_chars -= len(excerpt)
         attachment_sections.append(
             f"File: {attachment.file_name or 'unnamed'}\n"
             f"Type: {attachment.file_type or 'unknown'}\n"
-            f"Content excerpt:\n{content[:4000]}"
+            f"Content excerpt:\n{excerpt}"
         )
     if not attachment_sections:
         return payload.message
@@ -303,8 +273,14 @@ def _response_from_stream_state(
     )
 
 
-def _persist_ai_messages(db: Session, payload: AiChatRequest, response: AiChatResponse) -> AiSession:
-    session = _get_or_create_ai_session(db, payload, response)
+def _persist_ai_messages(
+    db: Session,
+    payload: AiChatRequest,
+    response: AiChatResponse,
+    *,
+    session: AiSession | None = None,
+) -> AiSession:
+    session = session or _get_or_create_ai_session(db, payload)
     user_message = AiMessage(
         session_id=session.id,
         conversation_id=payload.conversation_id,
@@ -394,16 +370,26 @@ def _attachment_metadata(payload: AiChatRequest) -> list[dict]:
     ]
 
 
-def _get_or_create_ai_session(db: Session, payload: AiChatRequest, response: AiChatResponse) -> AiSession:
+def _prepare_ai_session(db: Session, payload: AiChatRequest) -> AiSession:
+    """Persist the session before invoking AI so the first turn has a stable memory key."""
+    session = _get_or_create_ai_session(db, payload)
+    db.commit()
+    db.refresh(session)
+    return session
+
+
+def _get_or_create_ai_session(db: Session, payload: AiChatRequest) -> AiSession:
     session = None
     if payload.conversation_id:
         session = db.query(AiSession).filter(AiSession.id == payload.conversation_id).first()
+        if session and payload.user_id and session.user_id and session.user_id != payload.user_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the owner can use this AI session")
     if session is None:
         session_data = {
             "user_id": _existing_user_id(db, payload.user_id),
             "role_context": "patient",
             "title": payload.message[:80],
-            "risk_flag": "emergency" if response.intent.category == "emergency" else "none",
+            "risk_flag": "none",
             "metadata_json": {"source": "api.v1.ai.chat"},
         }
         if payload.conversation_id:
