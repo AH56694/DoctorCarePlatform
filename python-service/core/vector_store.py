@@ -241,6 +241,23 @@ class VectorStoreManager:  # 定义向量存储管理器类
             else:  # 不是列表
                 docs = docs_with_scores  # 直接使用
 
+            if use_rerank and self.reranker and isinstance(docs_with_scores, list):
+                if len(docs_with_scores) > 0 and isinstance(docs_with_scores[0], tuple):
+                    filtered_pairs = [
+                        (doc, score)
+                        for doc, score in docs_with_scores
+                        if score >= similarity_threshold
+                    ]
+                    if not filtered_pairs:
+                        config.logger.info(
+                            f"Search completed in {time.time() - start_time:.4f}s, no documents passed threshold before rerank"
+                        )
+                        return []
+                    docs = [doc for doc, _ in filtered_pairs]
+                    config.logger.info(
+                        f"Filtered rerank candidates by similarity threshold: {len(filtered_pairs)}/{len(docs_with_scores)} kept"
+                    )
+
             # 如果没有启用Rerank或没有Reranker，直接返回初步检索结果
             if not use_rerank or not self.reranker:  # 未启用重排序或没有重排序器
                 # FAISS 使用 MAX_INNER_PRODUCT 策略，返回的 score 就是余弦相似度（0~1，越大越相似）

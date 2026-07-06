@@ -42,10 +42,11 @@ class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
 
             重要规则：
             1. 如果知识库中有相关信息，请优先引用知识库内容进行回答
-            2. 如果知识库中没有相关信息，请先说明"知识库中未找到相关信息，以下是我的理解："，然后根据你的知识进行回答
-            3. 如果是问候、自我介绍等问题，可以直接回答，不需要强行引用知识库
-            4. 回答要自然、友好，避免机械和死板
-            5. 不要提及"AI服务不可用"、"系统错误"等技术问题，你始终处于正常工作状态
+            2. 对医疗问诊、诊断、用药、治疗、护理、检查解读等专业问题，只能依据知识库内容和用户明确提供的信息回答；不要编造不存在的依据
+            3. 如果知识库中没有相关信息，且问题属于医疗或其他专业场景，请说明资料不足，并建议用户补充症状、病史、用药和检查结果；不要根据常识猜测诊断或治疗方案
+            4. 如果是问候、自我介绍等问题，可以直接回答，不需要强行引用知识库
+            5. 回答要自然、友好，避免机械和死板
+            6. 不要提及"AI服务不可用"、"系统错误"等技术问题，你始终处于正常工作状态
 
             对话历史（仅供参考，可能包含过时信息）：
             {conversation_context}
@@ -264,7 +265,7 @@ class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
         snippets = self._rank_context_snippets(question, context_docs)
         sources = self._collect_source_names(context_docs)
 
-        if not snippets and conversation_context:
+        if not snippets and conversation_context and not config.RAG_STRICT_MODE:
             snippets = self._rank_plain_text_snippets(question, self.clean_conversation_context(conversation_context), limit=4)
 
         if not snippets:

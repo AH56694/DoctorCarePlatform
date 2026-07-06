@@ -59,10 +59,10 @@ class RetrievalAgent:  # 定义检索 Agent 类
         self.vector_store = vector_store  # 引用全局向量存储（作为工具调用的回退方案）
 
         self.config = {  # 检索配置字典
-            "top_k": 5,  # 最终返回的文档数量
-            "initial_k": 10,  # 初始检索的文档数量
-            "similarity_threshold": 0.5,  # 余弦相似度阈值（0~1，越大越相似）
-            "use_rerank": False,   # 默认关闭重排序，减少开销
+            "top_k": config.RAG_TOP_K,  # 最终返回的文档数量
+            "initial_k": config.RAG_TOP_K * 3,  # 初始检索的文档数量
+            "similarity_threshold": config.RAG_SIMILARITY_THRESHOLD,  # 余弦相似度阈值（0~1，越大越相似）
+            "use_rerank": config.RAG_USE_RERANK,
             "use_rewrite": False,  # 默认关闭问题重写，减少LLM调用
             "max_citations": 5  # 最大引用数量
         }
@@ -72,9 +72,9 @@ class RetrievalAgent:  # 定义检索 Agent 类
         query: str,  # 用户查询
         conversation_context: str = "",  # 对话上下文
         use_rewrite: bool = False,  # 是否启用问题改写
-        use_rerank: bool = False,  # 是否启用重排序
-        top_k: int = 5,  # 返回结果数量
-        similarity_threshold: float = 0.5,  # 余弦相似度阈值（0~1，越大越相似）
+        use_rerank: Optional[bool] = None,  # 是否启用重排序
+        top_k: Optional[int] = None,  # 返回结果数量
+        similarity_threshold: Optional[float] = None,  # 余弦相似度阈值（0~1，越大越相似）
         **kwargs  # 其他关键字参数
     ) -> RetrievalResult:  # 返回检索结果对象
         """
@@ -92,6 +92,9 @@ class RetrievalAgent:  # 定义检索 Agent 类
             RetrievalResult: 检索结果
         """
         logger.info(f"[RetrievalAgent] Starting retrieval for: {query[:50]}...")
+        top_k = top_k or self.config["top_k"]
+        use_rerank = self.config["use_rerank"] if use_rerank is None else use_rerank
+        similarity_threshold = similarity_threshold if similarity_threshold is not None else self.config["similarity_threshold"]
 
         original_query = query  # 保存原始查询
         rewritten_query = query  # 初始化改写查询为原始查询
@@ -165,9 +168,9 @@ class RetrievalAgent:  # 定义检索 Agent 类
         query: str,
         conversation_context: str = "",
         use_rewrite: bool = False,
-        use_rerank: bool = False,
-        top_k: int = 5,
-        similarity_threshold: float = 0.5,  # 余弦相似度阈值（0~1，越大越相似）
+        use_rerank: Optional[bool] = None,
+        top_k: Optional[int] = None,
+        similarity_threshold: Optional[float] = None,  # 余弦相似度阈值（0~1，越大越相似）
         **kwargs
     ) -> Generator[str, None, None]:  # 返回字符串生成器
         """
@@ -177,6 +180,9 @@ class RetrievalAgent:  # 定义检索 Agent 类
             JSON格式的事件流
         """
         logger.info(f"[RetrievalAgent] Stream retrieval for: {query[:50]}...")
+        top_k = top_k or self.config["top_k"]
+        use_rerank = self.config["use_rerank"] if use_rerank is None else use_rerank
+        similarity_threshold = similarity_threshold if similarity_threshold is not None else self.config["similarity_threshold"]
 
         original_query = query  # 保存原始查询
         rewritten_query = query  # 初始化改写查询

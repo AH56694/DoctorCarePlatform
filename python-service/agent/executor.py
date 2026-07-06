@@ -5,6 +5,7 @@ from intent.classifier import IntentResult  # 从意图分类器导入意图识�
 from tools.registry import tool_registry  # 从工具注册表模块导入工具注册表单例
 from core.llm import LLMService  # 从 LLM 核心模块导入 LLM 服务类
 from core.vector_store import vector_store  # 从向量存储模块导入向量存储单例
+from core.config import config
 import ast  # 导入 ast 模块，用于安全解析字符串化的字典
 import time  # 导入 time 模块
 import logging  # 导入 logging 模块
@@ -160,7 +161,12 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
             try:  # try-except 异常处理
                 result = tool_registry.invoke_tool(  # 调用知识检索工具
                     "knowledge_search",  # 工具名称
-                    {"query": search_query, "top_k": 5, "similarity_threshold": 0.5},  # 检索参数：查询词、返回前5条、余弦相似度阈值0.5
+                    {
+                        "query": search_query,
+                        "top_k": config.RAG_TOP_K,
+                        "similarity_threshold": config.RAG_SIMILARITY_THRESHOLD,
+                        "use_rerank": config.RAG_USE_RERANK,
+                    },
                     run_id=state.run_id  # 运行 ID
                 )
                 chunks = result.get("chunks", [])  # 获取检索到的文档片段
@@ -168,10 +174,20 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
                 tool_call_id = result.get("tool_call_id")  # 获取工具调用 ID
             except Exception as e:  # 工具调用失败
                 logger.warning(f"[{state.run_id}] knowledge_search tool failed: {e}")  # 记录警告
-                chunks = self.vector_store.search(search_query, k=5, similarity_threshold=0.5)  # 降级使用本地向量存储检索，余弦相似度阈值0.5
+                chunks = self.vector_store.search(
+                    search_query,
+                    k=config.RAG_TOP_K,
+                    similarity_threshold=config.RAG_SIMILARITY_THRESHOLD,
+                    use_rerank=config.RAG_USE_RERANK,
+                )
                 scores = [getattr(doc, 'score', 0.5) for doc in chunks]  # getattr() 安全获取对象的属性，如果属性不存在则返回默认值 0.5
         else:  # 如果工具未注册
-            chunks = self.vector_store.search(search_query, k=5, similarity_threshold=0.5)  # 直接使用本地向量存储，余弦相似度阈值0.5
+            chunks = self.vector_store.search(
+                search_query,
+                k=config.RAG_TOP_K,
+                similarity_threshold=config.RAG_SIMILARITY_THRESHOLD,
+                use_rerank=config.RAG_USE_RERANK,
+            )
             scores = [getattr(doc, 'score', 0.5) for doc in chunks]  # 获取分数
 
         chunks = [self._normalize_chunk(chunk, scores[index] if index < len(scores) else None) for index, chunk in enumerate(chunks)]  # 统一工具结果和向量检索结果
@@ -269,10 +285,14 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
 
         chunks = None  # 初始化检索片段
         sources = []  # 初始化来源列表
+        retrieval_sufficient = True
+        saw_knowledge_search = False
         for s in state.steps:  # 遍历所有步骤
             if s.step_type == StepType.KNOWLEDGE_SEARCH and s.output_data:  # 找到知识检索步骤
+                saw_knowledge_search = True
                 chunks = s.output_data.get("chunks", [])  # 获取片段
                 sources = s.output_data.get("sources", [])  # 获取来源
+                retrieval_sufficient = s.output_data.get("is_sufficient", False)
                 break  # 找到后跳出
 
         should_return_sources = True  # 默认返回来源
@@ -280,6 +300,24 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
             if s.step_type == StepType.QUESTION_CLASSIFICATION and s.output_data:  # 找到问题分类步骤
                 should_return_sources = s.output_data.get("should_return_sources", True)  # 获取是否应返回来源
                 break  # 找到后跳出
+
+        if (
+            config.RAG_STRICT_MODE
+            and saw_knowledge_search
+            and (
+                not chunks
+                or not retrieval_sufficient
+                or len(sources or []) < config.RAG_MIN_SOURCE_COUNT
+            )
+        ):
+            answer = self._insufficient_evidence_answer()
+            step.complete({
+                "answer": answer,
+                "sources": sources if should_return_sources else [],
+                "has_sources": False,
+                "evidence_sufficient": False,
+            })
+            return step.output_data
 
         docs = []  # 初始化文档对象列表
         if chunks:  # 如果有检索片段
@@ -406,6 +444,14 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
         if len(snippet) > limit:
             snippet = snippet[:limit].rstrip("，,；;、 ") + "..."
         return snippet
+
+    def _insufficient_evidence_answer(self) -> str:
+        return (
+            "当前知识库中没有检索到足够可靠的资料来支持明确回答。"
+            "为了降低误导风险，我不能基于猜测给出诊断、用药或治疗结论。\n\n"
+            "建议补充：主要症状、持续时间、年龄、既往病史、正在使用的药物、检查结果和症状变化。"
+            "如果出现胸痛、呼吸困难、意识改变、明显出血、高热不退或症状快速加重，请及时联系医生或就近就医。"
+        )
 
     def _format_history(self, messages: list) -> str:  # 格式化对话历史为文本
         """格式化对话历史为上下文字符串"""  # 方法文档字符串

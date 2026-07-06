@@ -2,6 +2,7 @@ from typing import Dict, Any, List, Optional, Tuple  # 导入类型注解：Dict
 from agent.state import AgentState, AgentStep, StepType, TerminationCondition, IntermediateConclusion  # 从 agent.state 模块导入 Agent 状态相关的类
 from intent.classifier import IntentClassifier, IntentType, IntentResult  # 从意图分类器模块导入：IntentClassifier（意图分类器）、IntentType（意图类型枚举）、IntentResult（意图识别结果）
 from dataclasses import dataclass  # 导入 dataclass 装饰器，自动生成 __init__ 等方法
+from core.config import config
 import time  # 导入 time 模块
 import logging  # 导入 logging 模块
 
@@ -222,7 +223,7 @@ class Planner:  # 任务规划器类，负责分析任务、规划执行步骤�
         if scores is None:  # 如果没有提供分数
             scores = [0.5] * len(chunks)  # 为每个片段设置默认分数 0.5，[0.5] * n 创建包含 n 个 0.5 的列表
 
-        low_score_count = sum(1 for s in scores if s < 0.6)  # 统计低分结果数量（分数低于 0.6），类似 Java Stream 的 filter + count
+        low_score_count = sum(1 for s in scores if s < config.RAG_SIMILARITY_THRESHOLD)  # 统计低分结果数量
         if low_score_count > len(scores) * 0.5:  # 如果超过一半的结果都是低分
             return SufficiencyResult(  # 返回不充分的结果
                 is_sufficient=False,  # 不充分

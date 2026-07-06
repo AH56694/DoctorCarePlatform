@@ -70,6 +70,13 @@ class ConfigManager:  # 定义配置管理器类，类似 Java 中的 class，�
         self.VECTOR_STORE_PERSIST_DIR = os.getenv("VECTOR_STORE_PERSIST_DIR", "./faiss_index")  # FAISS 向量库持久化目录，默认 ./faiss_index
         self.VECTOR_STORE_COLLECTION_NAME = os.getenv("VECTOR_STORE_COLLECTION_NAME", "ai_knowledge_collection")  # Milvus 集合名称（类似 MySQL 表名），默认 ai_knowledge_collection
 
+        # RAG safety configuration. These defaults make medical/knowledge answers evidence-first.
+        self.RAG_STRICT_MODE = os.getenv("RAG_STRICT_MODE", "true").lower() == "true"
+        self.RAG_SIMILARITY_THRESHOLD = float(os.getenv("RAG_SIMILARITY_THRESHOLD", "0.68"))
+        self.RAG_TOP_K = int(os.getenv("RAG_TOP_K", "5"))
+        self.RAG_USE_RERANK = os.getenv("RAG_USE_RERANK", "true").lower() == "true"
+        self.RAG_MIN_SOURCE_COUNT = int(os.getenv("RAG_MIN_SOURCE_COUNT", "1"))
+
         # Rerank Configuration
         self.RERANKER_TYPE = os.getenv("RERANKER_TYPE", "simple")  # 重排序器类型，可选 "simple"、"bge"、"cohere"，默认 simple
         self.COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")  # Cohere API 密钥（用于 Cohere 重排序服务），默认为空
@@ -121,6 +128,11 @@ class ConfigManager:  # 定义配置管理器类，类似 Java 中的 class，�
             "USE_MILVUS": self.USE_MILVUS,  # 是否使用 Milvus
             "VECTOR_STORE_PERSIST_DIR": self.VECTOR_STORE_PERSIST_DIR,  # 向量库持久化目录
             "VECTOR_STORE_COLLECTION_NAME": self.VECTOR_STORE_COLLECTION_NAME,  # Milvus 集合名称
+            "RAG_STRICT_MODE": self.RAG_STRICT_MODE,
+            "RAG_SIMILARITY_THRESHOLD": self.RAG_SIMILARITY_THRESHOLD,
+            "RAG_TOP_K": self.RAG_TOP_K,
+            "RAG_USE_RERANK": self.RAG_USE_RERANK,
+            "RAG_MIN_SOURCE_COUNT": self.RAG_MIN_SOURCE_COUNT,
             "EMBEDDING_MODEL": self.EMBEDDING_MODEL,  # Embedding 模型类型
             "LOCAL_EMBEDDING_MODEL": self.LOCAL_EMBEDDING_MODEL,  # 本地 Embedding 模型名称
             "RERANKER_TYPE": self.RERANKER_TYPE,  # 重排序器类型

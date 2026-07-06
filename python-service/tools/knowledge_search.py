@@ -19,19 +19,19 @@ class KnowledgeSearchTool(Tool):  # 知识库检索工具，继承自 Tool 抽�
                     type="number",  # 类型为数字
                     description="返回结果数量",  # 参数描述
                     required=False,  # 非必填
-                    default=3  # 默认返回3条
+                    default=config.RAG_TOP_K  # 默认返回条数
                 ),
                 "similarity_threshold": SchemaProperty(  # 余弦相似度阈值参数
                     type="number",  # 类型为数字
                     description="余弦相似度阈值（0~1，越大越相似），只返回分数 >= 此阈值的结果",  # 参数描述
                     required=False,  # 非必填
-                    default=0.5  # 默认阈值0.5
+                    default=config.RAG_SIMILARITY_THRESHOLD  # 默认阈值
                 ),
                 "use_rerank": SchemaProperty(  # 是否使用重排序参数
                     type="boolean",  # 类型为布尔值
                     description="是否使用重排序",  # 参数描述
                     required=False,  # 非必填
-                    default=True  # 默认开启重排序
+                    default=config.RAG_USE_RERANK  # 默认开启重排序
                 )
             },
             type="object"  # 整体类型为对象
@@ -74,9 +74,9 @@ class KnowledgeSearchTool(Tool):  # 知识库检索工具，继承自 Tool 抽�
     def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:  # 实现抽象方法，执行知识库检索
         """执行知识库检索"""
         query = parameters.get("query")  # 获取查询语句，get 方法在 key 不存在时返回 None
-        top_k = int(parameters.get("top_k", 3))  # 获取返回数量，默认3，转换为 int 类型
-        similarity_threshold = parameters.get("similarity_threshold", 0.5)  # 获取余弦相似度阈值，默认0.5
-        use_rerank = parameters.get("use_rerank", True)  # 获取是否使用重排序，默认 True
+        top_k = int(parameters.get("top_k", config.RAG_TOP_K))  # 获取返回数量，转换为 int 类型
+        similarity_threshold = parameters.get("similarity_threshold", config.RAG_SIMILARITY_THRESHOLD)  # 获取余弦相似度阈值
+        use_rerank = parameters.get("use_rerank", config.RAG_USE_RERANK)  # 获取是否使用重排序
 
         # 执行检索
         docs = self.vector_store.search(  # 调用向量存储的 search 方法执行检索

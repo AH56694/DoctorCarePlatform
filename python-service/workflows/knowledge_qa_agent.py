@@ -5,6 +5,7 @@ from agent.events import EventBus, event_bus  # 从 agent.events 模块导入事
 from workflows.retrieval_agent import RetrievalAgent  # 从 retrieval_agent 模块导入检索 Agent 类
 from core.vector_store import vector_store  # 从 core.vector_store 模块导入全局向量存储实例（用于语义检索）
 from core.llm import LLMService  # 从 core.llm 模块导入 LLM 服务类
+from core.config import config
 from tools.registry import tool_registry  # 从 tools.registry 模块导入工具注册表实例
 import logging  # 导入日志模块
 import json  # 导入 JSON 序列化模块
@@ -21,6 +22,11 @@ class KnowledgeQAAgent:  # 定义知识问答 Agent 类
         self.retrieval_agent = RetrievalAgent()  # 初始化检索 Agent 实例
         self.vector_store = vector_store  # 引用全局向量存储实例
         self.llm_service = LLMService()  # 初始化 LLM 服务实例
+        self.strict_rag = config.RAG_STRICT_MODE
+        self.similarity_threshold = config.RAG_SIMILARITY_THRESHOLD
+        self.top_k = config.RAG_TOP_K
+        self.use_rerank = config.RAG_USE_RERANK
+        self.min_source_count = config.RAG_MIN_SOURCE_COUNT
         self._router = None  # 路由 Agent 延迟加载占位符（避免循环导入）
         self._reasoning_agent = None  # 推理 Agent 延迟加载占位符
 
@@ -101,21 +107,26 @@ class KnowledgeQAAgent:  # 定义知识问答 Agent 类
         """L1 简化链路：直接检索+生成"""
         # 直接向量检索
         docs = self.vector_store.search(  # 调用向量存储的语义检索方法
-            query=question, k=5, similarity_threshold=0.5, use_rerank=False  # k=5 返回5个结果，similarity_threshold=0.5 余弦相似度阈值，不使用重排序
+            query=question,
+            k=self.top_k,
+            similarity_threshold=self.similarity_threshold,
+            use_rerank=self.use_rerank,
         )
         logger.info(f"[KnowledgeQAAgent] L1 retrieved {len(docs)} documents")  # 记录检索到的文档数
 
         if not docs:  # 如果没有检索到相关文档
-            if full_context:  # 如果有上下文信息
-                answer = self.llm_service.get_answer(question, [], full_context)  # 仅基于上下文生成回答（无文档参考）
-            else:
-                answer = "抱歉，知识库中没有找到与您问题相关的内容。"  # 返回默认提示
+            answer = self._insufficient_evidence_answer(question)
             self._save_to_memory(conversation_id, question, answer)  # 保存对话到记忆
             return {"answer": answer, "sources": [], "has_sources": False, "task_type": "knowledge_qa"}  # 返回结果字典
 
+        sources = self._build_sources(docs)  # 构建引用来源列表
+        if not self._sources_are_sufficient(sources):
+            answer = self._insufficient_evidence_answer(question)
+            self._save_to_memory(conversation_id, question, answer)
+            return {"answer": answer, "sources": sources, "has_sources": False, "task_type": "knowledge_qa"}
+
         answer = self.llm_service.get_answer(question, docs, full_context)  # 基于检索到的文档和上下文生成回答
         self._save_to_memory(conversation_id, question, answer)  # 保存对话到记忆
-        sources = self._build_sources(docs)  # 构建引用来源列表
 
         return {
             "answer": answer, "sources": sources,  # 回答和引用来源
@@ -129,8 +140,9 @@ class KnowledgeQAAgent:  # 定义知识问答 Agent 类
             query=question,  # 用户问题
             conversation_context=full_context,  # 对话上下文
             use_rewrite=True,  # 启用问题改写
-            use_rerank=True,  # 启用重排序
-            top_k=5  # 返回前5个结果
+            use_rerank=self.use_rerank,  # 启用重排序
+            top_k=self.top_k,  # 返回前N个结果
+            similarity_threshold=self.similarity_threshold,
         )
 
         docs = retrieval_result.reranked_documents  # 获取重排序后的文档列表
@@ -138,9 +150,16 @@ class KnowledgeQAAgent:  # 定义知识问答 Agent 类
                      f"(rewritten: '{retrieval_result.rewritten_query[:30]}...')")  # 记录改写后的查询
 
         if not docs:  # 如果没有检索到文档
-            answer = "抱歉，知识库中没有找到与您问题相关的内容。"
+            answer = self._insufficient_evidence_answer(question)
             self._save_to_memory(conversation_id, question, answer)
             return {"answer": answer, "sources": [], "has_sources": False, "task_type": "knowledge_qa"}
+
+        citation_sources = retrieval_result.citations.get("sources", []) if retrieval_result.citations else []  # 获取引用来源（带条件判断）
+        sources = citation_sources if citation_sources else self._build_sources(docs)  # 优先使用引用来源，否则手动构建
+        if not self._sources_are_sufficient(sources):
+            answer = self._insufficient_evidence_answer(question)
+            self._save_to_memory(conversation_id, question, answer)
+            return {"answer": answer, "sources": sources, "has_sources": False, "task_type": "knowledge_qa"}
 
         # 将检索结果转为 LLM 可用的文档格式
         llm_docs = []  # 初始化 LLM 文档列表
@@ -157,9 +176,6 @@ class KnowledgeQAAgent:  # 定义知识问答 Agent 类
         answer = self.llm_service.get_answer(question, llm_docs, full_context)  # 基于文档和上下文生成回答
         self._save_to_memory(conversation_id, question, answer)  # 保存到记忆
 
-        citation_sources = retrieval_result.citations.get("sources", []) if retrieval_result.citations else []  # 获取引用来源（带条件判断）
-        sources = citation_sources if citation_sources else self._build_sources(docs)  # 优先使用引用来源，否则手动构建
-
         return {
             "answer": answer, "sources": sources,
             "has_sources": len(sources) > 0, "task_type": "knowledge_qa"
@@ -175,11 +191,21 @@ class KnowledgeQAAgent:  # 定义知识问答 Agent 类
             result = self.reasoning_agent.reason(
                 question, full_context, conversation_id
             )
+            sources = result.get("sources", [])
+            if not self._sources_are_sufficient(sources):
+                answer = self._insufficient_evidence_answer(question)
+                self._save_to_memory(conversation_id, question, answer)
+                return {
+                    "answer": answer,
+                    "sources": sources,
+                    "has_sources": False,
+                    "task_type": "knowledge_qa"
+                }
             self._save_to_memory(conversation_id, question, result.get("answer", ""))
             return {
                 "answer": result.get("answer", ""),
-                "sources": result.get("sources", []),
-                "has_sources": len(result.get("sources", [])) > 0,
+                "sources": sources,
+                "has_sources": len(sources) > 0,
                 "task_type": "knowledge_qa"
             }
         except Exception as e:
@@ -195,18 +221,43 @@ class KnowledgeQAAgent:  # 定义知识问答 Agent 类
                 doc.get('metadata', {}) if isinstance(doc, dict) else {}  # 如果是字典则用 .get() 取值，否则返回空字典
             )
             doc_id = metadata.get("doc_id")  # 获取文档ID
+            source_label = (
+                metadata.get("source")
+                or metadata.get("file_name")
+                or metadata.get("filename")
+                or metadata.get("title")
+            )
+            if not (doc_id or source_label or metadata.get("page") is not None or metadata.get("chunk_index") is not None):
+                continue
             if doc_id and doc_id in seen_doc_ids:  # 如果文档ID已存在，跳过（去重）
                 continue  # continue 跳过当前循环迭代（类似 Java 的 continue）
             if doc_id:  # 如果有文档ID
                 seen_doc_ids.add(doc_id)  # 将文档ID添加到已见集合
             sources.append({  # 添加来源信息
                 "doc_id": doc_id,  # 文档ID
-                "doc": metadata.get("source", "未知文档"),  # 文档来源（默认为"未知文档"）
+                "doc": source_label or "未知文档",  # 文档来源（默认为"未知文档"）
                 "page": metadata.get("page"),  # 页码（可能为 None）
                 "chunk_index": metadata.get("chunk_index"),  # 片段索引
-                "score": metadata.get("score", 0)  # 相似度得分（默认为0）
+                "score": metadata.get("score", getattr(doc, "score", 0))  # 相似度得分（默认为0）
             })
         return sources  # 返回去重后的来源列表
+
+    def _sources_are_sufficient(self, sources: list) -> bool:
+        if not self.strict_rag:
+            return True
+        meaningful_sources = [
+            source for source in (sources or [])
+            if any(source.get(key) for key in ("doc_id", "doc", "source", "title", "document_id", "content", "snippet"))
+        ]
+        return len(meaningful_sources) >= self.min_source_count
+
+    def _insufficient_evidence_answer(self, question: str) -> str:
+        return (
+            "当前知识库中没有检索到足够可靠的资料来支持明确回答。"
+            "为了降低误导风险，我不能基于猜测给出诊断、用药或治疗结论。\n\n"
+            "建议补充：主要症状、持续时间、年龄、既往病史、正在使用的药物、检查结果和症状变化。"
+            "如果出现胸痛、呼吸困难、意识改变、明显出血、高热不退或症状快速加重，请及时联系医生或就近就医。"
+        )
 
     def _save_to_memory(self, conversation_id: str, question: str, answer: str):
         """保存对话到会话记忆"""
@@ -257,29 +308,23 @@ class KnowledgeQAAgent:  # 定义知识问答 Agent 类
             # 1. 直接向量检索
             docs = self.vector_store.search(  # 执行向量检索
                 query=question,
-                k=5,  # 返回前5个结果
-                similarity_threshold=0.5,  # 余弦相似度阈值（0~1，越大越相似）
-                use_rerank=False  # 不使用重排序（流式模式追求速度）
+                k=self.top_k,
+                similarity_threshold=self.similarity_threshold,
+                use_rerank=self.use_rerank,
             )
 
             logger.info(f"[KnowledgeQAAgent] Retrieved {len(docs)} documents")
 
             # 2. 构建引用来源（按 doc_id 去重）
-            seen_doc_ids = set()  # 已见文档ID集合
-            sources = []  # 来源列表
-            for doc in docs:  # 遍历检索到的文档
-                metadata = getattr(doc, 'metadata', {})  # getattr() 安全获取 metadata 属性
-                doc_id = metadata.get("doc_id")  # 获取文档ID
-                if doc_id and doc_id in seen_doc_ids:  # 去重检查
-                    continue
-                if doc_id:
-                    seen_doc_ids.add(doc_id)  # 添加到已见集合
-                sources.append({  # 添加来源信息
-                    "doc_id": doc_id,
-                    "doc": metadata.get("source", "未知文档"),
-                    "page": metadata.get("page"),
-                    "chunk_index": metadata.get("chunk_index"),
-                })
+            sources = self._build_sources(docs)
+            if not self._sources_are_sufficient(sources):
+                answer = self._insufficient_evidence_answer(question)
+                self._save_to_memory(conversation_id, question, answer)
+                yield json.dumps({"type": "start", "content": ""}, ensure_ascii=False)
+                yield json.dumps({"type": "token", "content": answer}, ensure_ascii=False)
+                yield json.dumps({"type": "sources", "sources": sources, "task_type": "knowledge_qa"}, ensure_ascii=False)
+                yield json.dumps({"type": "end", "content": answer, "task_type": "knowledge_qa"}, ensure_ascii=False)
+                return
 
             # 3. 流式 LLM 生成
             for chunk in self.llm_service.get_answer_stream(  # 遍历 LLM 流式生成的每个文本块
