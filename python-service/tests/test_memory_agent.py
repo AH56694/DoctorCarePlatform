@@ -40,7 +40,7 @@ class TestMemoryAgentInit:
     def test_compress_threshold(self, memory_agent):
         """测试压缩阈值配置"""
         assert memory_agent.COMPRESS_THRESHOLD == 10
-        assert memory_agent.KEEP_RECENT == 5
+        assert memory_agent.KEEP_RECENT == 6
 
 
 class TestLoadMemory:
@@ -59,9 +59,32 @@ class TestLoadMemory:
             "messages": [],
             "compressed": False
         }
+        memory_agent._hydrate_conversation_memory = Mock(return_value=False)
+        memory_agent._load_user_profile = Mock(return_value=None)
 
         context = memory_agent.load_memory(state_with_conversation)
         assert context == ""
+
+    @patch('agent.memory_agent.tool_registry')
+    def test_load_memory_hydrates_expired_redis_history(self, mock_registry, memory_agent, state_with_conversation):
+        mock_registry.has_tool.return_value = True
+        mock_registry.invoke_tool.side_effect = [
+            {"messages": [], "compressed": False},
+            {
+                "messages": [
+                    {"role": "user", "content": "第一轮症状"},
+                    {"role": "assistant", "content": "第一轮建议"},
+                ],
+                "compressed": False,
+            },
+        ]
+        memory_agent._hydrate_conversation_memory = Mock(return_value=True)
+        memory_agent._load_user_profile = Mock(return_value=None)
+
+        context = memory_agent.load_memory(state_with_conversation)
+
+        assert mock_registry.invoke_tool.call_count == 2
+        assert "第一轮症状" in context
 
     @patch('agent.memory_agent.tool_registry')
     def test_load_memory_with_messages(self, mock_registry, memory_agent, state_with_conversation):

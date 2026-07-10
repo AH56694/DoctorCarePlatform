@@ -97,11 +97,6 @@ class Orchestrator:  # Agent 编排器类，负责协调规划和执行，管理
                             state.complete(clarification_output)  # 完成执行
                             break  # 跳出循环
 
-                        if step_type == StepType.ANSWER_GENERATION:  # 如果是答案生成步骤
-                            final_output = self._build_success_response(state)  # 构建成功响应
-                            state.complete(final_output)  # 完成执行
-                            break  # 跳出循环
-
                     except Exception as e:  # 步骤执行失败
                         logger.error(f"[{state.run_id}] Step {step_name} failed (attempt {retry_count + 1}): {str(e)}")  # 记录错误
                         self.event_bus.publish(StepFailedEvent(  # 发布步骤失败事件
@@ -233,12 +228,6 @@ class Orchestrator:  # Agent 编排器类，负责协调规划和执行，管理
                             }
                         })
 
-                        state.complete({  # 完成执行
-                            "answer": answer,  # 答案
-                            "sources": sources  # 来源
-                        })
-                        break  # 跳出循环
-
                 except Exception as e:  # 步骤执行失败
                     logger.error(f"[{state.run_id}] Step {step_name} failed: {str(e)}")  # 记录错误
                     yield json.dumps({  # yield 返回步骤失败消息
@@ -252,6 +241,9 @@ class Orchestrator:  # Agent 编排器类，负责协调规划和执行，管理
                 should_terminate, reason = self.planner.should_terminate(state)  # 检查终止条件
                 if should_terminate:  # 如果应该终止
                     break  # 跳出循环
+
+            if state.status == AgentStatus.RUNNING:
+                state.complete(self._build_success_response(state))
 
         except Exception as e:  # 编排器级别异常
             logger.error(f"[{state.run_id}] Orchestrator stream run failed: {str(e)}")  # 记录错误

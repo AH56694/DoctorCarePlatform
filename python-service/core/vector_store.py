@@ -122,6 +122,15 @@ class VectorStoreManager:  # 定义向量存储管理器类
                     "port": milvus_port,  # 端口
                     "alias": "default"  # 连接别名
                 },
+                index_params={
+                    "metric_type": config.VECTOR_STORE_METRIC_TYPE,
+                    "index_type": "HNSW",
+                    "params": {"M": 8, "efConstruction": 64},
+                },
+                search_params={
+                    "metric_type": config.VECTOR_STORE_METRIC_TYPE,
+                    "params": {"ef": 64},
+                },
                 # 自动创建集合（如果不存在）
                 auto_id=True  # 自动生成文档 ID
             )
@@ -175,7 +184,16 @@ class VectorStoreManager:  # 定义向量存储管理器类
                         "host": milvus_host,
                         "port": milvus_port,
                         "alias": "default"
-                    }
+                    },
+                    index_params={
+                        "metric_type": config.VECTOR_STORE_METRIC_TYPE,
+                        "index_type": "HNSW",
+                        "params": {"M": 8, "efConstruction": 64},
+                    },
+                    search_params={
+                        "metric_type": config.VECTOR_STORE_METRIC_TYPE,
+                        "params": {"ef": 64},
+                    },
                 )
                 config.logger.info(f"Created Milvus collection '{self.collection_name}' with {len(documents)} documents")  # 记录创建成功
             else:  # 使用 FAISS
@@ -231,6 +249,16 @@ class VectorStoreManager:  # 定义向量存储管理器类
             search_time = time.time() - search_start  # 计算搜索耗时
             config.logger.info(f"Vector search completed in {search_time:.4f}s, found {len(docs_with_scores) if isinstance(docs_with_scores, list) else 0} documents")  # 记录搜索结果
 
+            if (
+                isinstance(docs_with_scores, list)
+                and docs_with_scores
+                and isinstance(docs_with_scores[0], tuple)
+            ):
+                docs_with_scores = [
+                    (doc, self._normalize_vector_score(score))
+                    for doc, score in docs_with_scores
+                ]
+
             # 提取文档
             if isinstance(docs_with_scores, list):  # isinstance 检查是否为列表类型
                 if len(docs_with_scores) > 0 and isinstance(docs_with_scores[0], tuple):  # 检查第一个元素是否为元组
@@ -241,6 +269,7 @@ class VectorStoreManager:  # 定义向量存储管理器类
             else:  # 不是列表
                 docs = docs_with_scores  # 直接使用
 
+            filtered_pairs = []
             if use_rerank and self.reranker and isinstance(docs_with_scores, list):
                 if len(docs_with_scores) > 0 and isinstance(docs_with_scores[0], tuple):
                     filtered_pairs = [
@@ -265,7 +294,7 @@ class VectorStoreManager:  # 定义向量存储管理器类
                 for i, (doc, score) in enumerate(docs_with_scores):  # 遍历带相似度分数的文档列表
                     config.logger.info(f"[FAISS] Doc {i}: cosine similarity={score:.4f}, threshold={similarity_threshold}, pass={score >= similarity_threshold}")  # 打印每条结果的余弦相似度
                     if score >= similarity_threshold:  # 余弦相似度越大越相似，分数 >= 阈值 的文档才保留
-                        filtered_docs.append(doc)  # 添加到结果
+                        filtered_docs.append(self._attach_retrieval_scores(doc, vector_score=score))  # 添加到结果
                     else:
                         config.logger.info(f"[FAISS] Filtered out: similarity {score:.4f} < threshold {similarity_threshold}")  # 记录被过滤
                 config.logger.info(f"Search completed in {time.time() - start_time:.4f}s, returning {len(filtered_docs)} documents")  # 记录搜索结果
@@ -279,7 +308,15 @@ class VectorStoreManager:  # 定义向量存储管理器类
                 config.logger.info(f"Rerank completed in {rerank_time:.4f}s, top {len(rerank_results)} results")  # 记录重排序结果
 
                 # 提取重排序后的文档
-                reranked_docs = [r.document for r in rerank_results]  # 列表推导式：从结果中提取文档对象
+                vector_scores = {id(doc): score for doc, score in filtered_pairs}
+                reranked_docs = [
+                    self._attach_retrieval_scores(
+                        result.document,
+                        vector_score=vector_scores.get(id(result.document)),
+                        rerank_score=result.score,
+                    )
+                    for result in rerank_results
+                ]
 
                 # Rerank已经按相关性排序，这里不再应用similarity_threshold过滤
                 # 但如果需要可以在这里添加额外的过滤逻辑
@@ -293,7 +330,7 @@ class VectorStoreManager:  # 定义向量存储管理器类
                 filtered_docs = []  # 过滤后的文档列表
                 for doc, score in docs_with_scores:  # 遍历原始结果
                     if score >= similarity_threshold:  # 余弦相似度越大越相似
-                        filtered_docs.append(doc)  # 添加
+                        filtered_docs.append(self._attach_retrieval_scores(doc, vector_score=score))  # 添加
                 config.logger.info(f"Search completed in {time.time() - start_time:.4f}s (Rerank failed, fallback to vector search), returning {len(filtered_docs)} documents")  # 记录回退结果
                 return filtered_docs  # 返回过滤后的结果
 
@@ -313,6 +350,31 @@ class VectorStoreManager:  # 定义向量存储管理器类
                 config.logger.error(f"Fallback search also failed: {e2}")  # 记录错误
                 config.logger.info(f"Search completed in {time.time() - start_time:.4f}s (all searches failed), returning empty results")  # 记录全部失败
                 return []  # 返回空列表
+
+    def _attach_retrieval_scores(
+        self,
+        document: Document,
+        *,
+        vector_score: Optional[float] = None,
+        rerank_score: Optional[float] = None,
+    ) -> Document:
+        """Preserve retrieval scores so downstream evidence checks use real values."""
+        metadata = dict(getattr(document, "metadata", {}) or {})
+        if vector_score is not None:
+            metadata["vector_score"] = float(vector_score)
+        if rerank_score is not None:
+            metadata["rerank_score"] = float(rerank_score)
+        final_score = vector_score if vector_score is not None else rerank_score
+        if final_score is not None:
+            metadata["score"] = float(final_score)
+        document.metadata = metadata
+        return document
+
+    def _normalize_vector_score(self, score: float) -> float:
+        numeric_score = float(score)
+        if config.VECTOR_STORE_METRIC_TYPE == "L2":
+            return 1.0 / (1.0 + max(0.0, numeric_score))
+        return numeric_score
 
     def delete_document(self, doc_id: int):  # 定义删除文档向量的方法
         """

@@ -84,14 +84,6 @@ class ConversationMemoryWriteTool(Tool):  # 对话记忆写入工具，继承自
         # 写入Redis
         redis_client.add_message(conversation_id, role, content)  # 将消息写入 Redis 存储
 
-        # 如果对话轮数超过阈值，清除旧摘要（让它在下次读取时重新生成）
-        message_count = redis_client.get_message_count(conversation_id)  # 获取当前对话的消息总数
-        if message_count > 10:  # 如果超过10条消息
-            summary = redis_client.get_summary(conversation_id)  # 获取已有的摘要
-            if summary:  # 如果摘要存在
-                redis_client.client.delete(f"conversation:{conversation_id}:summary")  # 删除旧摘要的 Redis 缓存键
-                config.logger.info(f"Cleared stale summary for conversation {conversation_id}")  # 记录清除日志
-
         return {  # 返回结果字典
             "success": True,  # 写入成功
             "message_id": message_id,  # 消息 ID

@@ -104,8 +104,9 @@ class TestQuestionRewrite:
         assert result.rewritten_question is not None
         assert result.rewrite_type == "simple"
 
-    def test_rewrite_semantic_fallback(self, planner):
+    def test_rewrite_semantic_fallback(self, planner, monkeypatch):
         """测试语义改写（无 LLM 时降级为简单改写）"""
+        monkeypatch.setattr(planner, "_get_llm", lambda: None)
         result = planner.rewrite_question("如何学习编程？")
         # 无 DASHSCOPE_API_KEY 时应降级为 simple
         assert result.rewrite_type in ["semantic", "simple"]
@@ -132,6 +133,15 @@ class TestRetrievalSufficiency:
         scores = [0.3, 0.2]
         result = planner.evaluate_retrieval_sufficiency(chunks, "test question", scores)
         assert result.is_sufficient is False
+
+    def test_unknown_score_is_not_replaced_with_false_low_score(self, planner):
+        result = planner.evaluate_retrieval_sufficiency(
+            [{"content": "可靠的单一指南片段"}],
+            "需要观察什么？",
+            [None],
+        )
+
+        assert result.is_sufficient is True
 
 
 class TestStepPlanning:

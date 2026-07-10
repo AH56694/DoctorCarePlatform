@@ -180,7 +180,7 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
                     similarity_threshold=config.RAG_SIMILARITY_THRESHOLD,
                     use_rerank=config.RAG_USE_RERANK,
                 )
-                scores = [getattr(doc, 'score', 0.5) for doc in chunks]  # getattr() 安全获取对象的属性，如果属性不存在则返回默认值 0.5
+                scores = [self._document_score(doc) for doc in chunks]
         else:  # 如果工具未注册
             chunks = self.vector_store.search(
                 search_query,
@@ -188,10 +188,10 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
                 similarity_threshold=config.RAG_SIMILARITY_THRESHOLD,
                 use_rerank=config.RAG_USE_RERANK,
             )
-            scores = [getattr(doc, 'score', 0.5) for doc in chunks]  # 获取分数
+            scores = [self._document_score(doc) for doc in chunks]
 
         chunks = [self._normalize_chunk(chunk, scores[index] if index < len(scores) else None) for index, chunk in enumerate(chunks)]  # 统一工具结果和向量检索结果
-        scores = [chunk.get("score", 0.5) for chunk in chunks]  # 使用规范化后的分数
+        scores = [chunk.get("score") for chunk in chunks]  # 使用规范化后的真实分数
 
         sufficiency = self.planner.evaluate_retrieval_sufficiency(chunks, query, scores)  # 评估检索结果充分性
 
@@ -214,7 +214,7 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
             conclusion_type="retrieval",  # 结论类型为检索
             content={  # 结论内容
                 "chunk_count": len(chunks),  # 检索到的片段数量
-                "avg_score": sum(scores) / len(scores) if scores else 0,  # 平均相似度分数
+                "avg_score": self._average_numeric_scores(scores),
                 "is_sufficient": sufficiency.is_sufficient  # 是否充分
             },
             confidence=sufficiency.confidence,  # 置信度
@@ -247,9 +247,15 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
             })
             return step.output_data  # 返回输出数据
 
-        sufficiency = self.planner.evaluate_retrieval_sufficiency(  # 评估检索充分性
-            [type('obj', (object,), {'page_content': c.get('content', '')}) for c in chunks],  # type('obj', (object,), {...}) 动态创建匿名类，类似 Java 的匿名内部类
-            state.original_input or ""  # 原始输入
+        search_scores = []
+        for search_step in state.steps:
+            if search_step.step_type == StepType.KNOWLEDGE_SEARCH and search_step.output_data:
+                search_scores = search_step.output_data.get("scores", [])
+                break
+        sufficiency = self.planner.evaluate_retrieval_sufficiency(
+            chunks,
+            state.original_input or "",
+            search_scores,
         )
 
         state.add_intermediate_conclusion(  # 添加充分性结论
@@ -277,11 +283,15 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
         question = state.original_input or ""  # 获取原始问题
         context = state.context or ""  # 获取上下文
 
-        # 使用 Memory Agent 加载记忆
-        memory_context = self.memory_agent.load_memory(state)  # 通过 @property 属性访问 MemoryAgent 并加载记忆
         full_context = context  # 初始化完整上下文
-        if memory_context:  # 如果有记忆上下文
-            full_context = f"{context}\n\n{memory_context}" if context else memory_context  # 拼接上下文和记忆
+        memory_was_loaded = any(
+            previous.step_type == StepType.MEMORY_READ and previous.output_data
+            for previous in state.steps
+        )
+        if not memory_was_loaded:
+            memory_context = self.memory_agent.load_memory(state)
+            if memory_context:
+                full_context = f"{context}\n\n{memory_context}" if context else memory_context
 
         chunks = None  # 初始化检索片段
         sources = []  # 初始化来源列表
@@ -334,33 +344,6 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
             question, docs if (docs and should_return_sources) else [], full_context  # 参数：问题、文档列表（可能为空）、完整上下文
         )
 
-        # 2. 写入会话记忆
-        if state.conversation_id and tool_registry.has_tool("conversation_memory_write"):  # 如果有会话且写入工具可用
-            try:  # try-except 异常处理
-                # 写入用户问题
-                tool_registry.invoke_tool(  # 调用记忆写入工具
-                    "conversation_memory_write",  # 工具名称
-                    {  # 参数
-                        "conversation_id": state.conversation_id,  # 会话 ID
-                        "role": "user",  # 角色：用户
-                        "content": question  # 用户问题
-                    },
-                    run_id=state.run_id  # 运行 ID
-                )
-                # 写入AI回答
-                tool_registry.invoke_tool(  # 调用记忆写入工具
-                    "conversation_memory_write",  # 工具名称
-                    {  # 参数
-                        "conversation_id": state.conversation_id,  # 会话 ID
-                        "role": "assistant",  # 角色：AI 助手
-                        "content": answer  # AI 回答
-                    },
-                    run_id=state.run_id  # 运行 ID
-                )
-                logger.info(f"[{state.run_id}] Saved conversation to memory")  # 记录信息日志
-            except Exception as e:  # 捕获异常
-                logger.warning(f"[{state.run_id}] Failed to write conversation memory: {e}")  # 记录警告
-
         step.complete({  # 标记步骤完成
             "answer": answer,  # 生成的答案
             "sources": sources if should_return_sources else [],  # 来源列表（根据分类结果决定是否包含）
@@ -382,7 +365,7 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
         else:
             metadata = getattr(chunk, "metadata", {}) or {}
             content = getattr(chunk, "page_content", str(chunk))
-            chunk_score = getattr(chunk, "score", chunk_score)
+            chunk_score = self._document_score(chunk) if chunk_score is None else chunk_score
 
         if isinstance(content, str):
             parsed = self._parse_serialized_chunk(content)
@@ -394,8 +377,20 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
         return {
             "content": content,
             "metadata": metadata,
-            "score": chunk_score if chunk_score is not None else 0.5,
+            "score": chunk_score,
         }
+
+    def _average_numeric_scores(self, scores: List[Any]) -> Optional[float]:
+        numeric_scores = [float(score) for score in scores if isinstance(score, (int, float))]
+        return sum(numeric_scores) / len(numeric_scores) if numeric_scores else None
+
+    def _document_score(self, document: Any) -> Optional[float]:
+        score = getattr(document, "score", None)
+        if isinstance(score, (int, float)):
+            return float(score)
+        metadata = getattr(document, "metadata", {}) or {}
+        metadata_score = metadata.get("score") if isinstance(metadata, dict) else None
+        return float(metadata_score) if isinstance(metadata_score, (int, float)) else None
 
     def _parse_serialized_chunk(self, value: str) -> Optional[Dict[str, Any]]:
         text = value.strip()
@@ -437,6 +432,9 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
             "page": page,
             "chunk_index": chunk_index,
             "snippet": self._short_snippet(chunk.get("content", "")),
+            "score": chunk.get("score"),
+            "vector_score": metadata.get("vector_score"),
+            "rerank_score": metadata.get("rerank_score"),
         }
 
     def _short_snippet(self, content: str, limit: int = 180) -> str:
@@ -480,7 +478,7 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
                 break  # 找到后跳出
 
         # 使用 Memory Agent 保存记忆
-        self.memory_agent.save_memory(state, state.original_input, answer)  # 调用 MemoryAgent 保存记忆
+        self.memory_agent.save_memory(state, state.original_input or "", answer or "")  # 调用 MemoryAgent 保存记忆
 
         step.complete({  # 标记步骤完成
             "success": True,  # 成功

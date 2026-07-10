@@ -1,20 +1,23 @@
 """Memory Agent - 独立的记忆管理Agent"""  # 模块文档字符串
 
 from typing import Dict, Any, Optional, List  # 导入类型注解：Dict（字典类型）、Any（任意类型）、Optional（可选类型）、List（列表类型）
+from concurrent.futures import ThreadPoolExecutor
 from tools.registry import tool_registry  # 从工具注册表模块导入工具注册表单例
 from core.llm import LLMService  # 从 LLM 核心模块导入 LLM 服务类
+from core.config import config
 import logging  # 导入 logging 模块，用于日志记录
 import json  # 导入 json 模块，用于 JSON 序列化和反序列化
 
 logger = logging.getLogger(__name__)  # 获取当前模块的日志记录器
+preference_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="memory-preference")
 
 
 class MemoryAgent:  # 记忆管理 Agent 类，负责主动管理记忆生命周期
     """独立的记忆管理 Agent - 主动管理记忆生命周期"""  # 类的文档字符串
 
     # 压缩配置
-    COMPRESS_THRESHOLD = 10  # 类常量：超过 10 轮对话触发压缩
-    KEEP_RECENT = 5          # 类常量：保留最近 5 轮完整对话
+    COMPRESS_THRESHOLD = config.MEMORY_COMPRESS_THRESHOLD
+    KEEP_RECENT = config.MEMORY_KEEP_RECENT
 
     def __init__(self):  # 构造函数，self 类似 Java 的 this
         self.llm_service = LLMService()  # 创建 LLM 服务实例
@@ -35,6 +38,13 @@ class MemoryAgent:  # 记忆管理 Agent 类，负责主动管理记忆生命周
                     run_id=state.run_id  # 传入运行 ID 用于追踪
                 )
                 messages = history.get("messages", [])  # 从返回结果中获取消息列表，如果键不存在则返回空列表
+                if not messages and self._hydrate_conversation_memory(state.conversation_id):
+                    history = tool_registry.invoke_tool(
+                        "conversation_memory_read",
+                        {"conversation_id": state.conversation_id, "limit": 10},
+                        run_id=state.run_id,
+                    )
+                    messages = history.get("messages", [])
                 if messages:  # 如果有历史消息
                     formatted = self._format_history(messages)  # 调用内部方法格式化消息
                     context_parts.append(formatted)  # 将格式化后的消息添加到上下文片段列表
@@ -49,7 +59,8 @@ class MemoryAgent:  # 记忆管理 Agent 类，负责主动管理记忆生命周
             if user_profile:  # 如果成功加载用户画像
                 context_parts.append(f"[用户画像] {json.dumps(user_profile, ensure_ascii=False)}")  # json.dumps() 将字典转为 JSON 字符串，ensure_ascii=False 允许中文直接输出
 
-        return "\n\n".join(context_parts) if context_parts else ""  # 将所有片段用双换行拼接，如果没有片段则返回空字符串
+        context = "\n\n".join(context_parts) if context_parts else ""
+        return self._limit_context(context)
 
     def save_memory(self, state, question: str, answer: str):  # 保存记忆（用户问题 + AI 回答 + 提取偏好）
         """保存记忆（用户问题 + AI回答 + 提取偏好）"""  # 方法文档字符串
@@ -87,8 +98,8 @@ class MemoryAgent:  # 记忆管理 Agent 类，负责主动管理记忆生命周
                 logger.warning(f"[{state.run_id}] MemoryAgent failed to write assistant message: {e}")  # 记录警告
 
         # 3. 异步提取用户偏好（不阻塞主流程）
-        if state.user_id:  # 如果有用户 ID
-            self._extract_user_preference(state, question, answer)  # 提取用户偏好并保存
+        if state.user_id and config.MEMORY_EXTRACT_USER_PREFERENCES:
+            preference_executor.submit(self._extract_user_preference, state, question, answer)
 
     def _load_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:  # 加载用户画像，下划线前缀表示内部方法
         """加载用户画像"""  # 方法文档字符串
@@ -98,6 +109,46 @@ class MemoryAgent:  # 记忆管理 Agent 类，负责主动管理记忆生命周
         except Exception as e:  # 捕获异常
             logger.warning(f"Failed to load user profile: {e}")  # 记录警告日志
             return None  # 返回 None 表示加载失败
+
+    def _hydrate_conversation_memory(self, conversation_id: str) -> bool:
+        """Rebuild expired Redis memory from durable AI messages."""
+        if not config.MEMORY_HYDRATE_FROM_MYSQL:
+            return False
+        try:
+            from core.mysql_client import mysql_client
+            from core.redis_client import redis_client
+
+            rows = mysql_client.fetch_all(
+                """
+                SELECT sender, content
+                FROM (
+                    SELECT sender, content, created_at
+                    FROM ai_messages
+                    WHERE session_id = %s AND content <> ''
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                ) AS recent_messages
+                ORDER BY created_at ASC
+                """,
+                (conversation_id, config.MEMORY_MAX_MESSAGES),
+            )
+            for row in rows:
+                role = "assistant" if row.get("sender") in {"ai", "assistant"} else "user"
+                content = str(row.get("content") or "").strip()
+                if content:
+                    redis_client.add_message(conversation_id, role, content)
+            return bool(rows)
+        except Exception as exc:
+            logger.warning(f"Failed to hydrate conversation {conversation_id} from MySQL: {exc}")
+            return False
+
+    def _limit_context(self, context: str) -> str:
+        if len(context) <= config.MEMORY_CONTEXT_MAX_CHARS:
+            return context
+        marker = "[较早上下文已截断]\n"
+        tail_budget = max(0, config.MEMORY_CONTEXT_MAX_CHARS - len(marker))
+        tail = context[-tail_budget:] if tail_budget else ""
+        return (marker + tail)[:config.MEMORY_CONTEXT_MAX_CHARS]
 
     def _extract_user_preference(self, state, question: str, answer: str):  # 提取用户偏好（使用 LLM 分析问答内容）
         """异步提取用户偏好"""  # 方法文档字符串

@@ -90,11 +90,16 @@ class KnowledgeSearchTool(Tool):  # 知识库检索工具，继承自 Tool 抽�
         formatted_docs = []  # 初始化格式化后的文档列表
         scores = []  # 初始化分数列表
         for doc in docs:  # 遍历检索到的文档
+            metadata = doc.metadata or {}
+            score = metadata.get("score")
             formatted_docs.append({  # 将每个文档转为字典格式
                 "content": doc.page_content,  # 文档内容（page_content 是 LangChain Document 的属性）
-                "metadata": doc.metadata  # 文档元数据（如来源、页码等）
+                "metadata": metadata,  # 文档元数据（如来源、页码等）
+                "score": score,
+                "vector_score": metadata.get("vector_score"),
+                "rerank_score": metadata.get("rerank_score"),
             })
-            scores.append(getattr(doc, 'score', 0.5))  # 获取文档的相似度分数，getattr 类似 Java 的反射获取属性，没有则默认0.5
+            scores.append(score)
 
         return {  # 返回结果字典
             "documents": formatted_docs,  # 文档列表（兼容 key: documents）

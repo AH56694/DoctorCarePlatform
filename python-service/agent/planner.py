@@ -156,18 +156,14 @@ class Planner:  # 任务规划器类，负责分析任务、规划执行步骤�
         if not hasattr(self, '_llm'):  # hasattr() 检查对象是否有指定属性，类似 Java 的反射字段检查
             try:  # try-except 处理导入失败的情况
                 from core.llm import llm_service  # 延迟导入 LLM 服务，避免循环依赖
-                self._llm = llm_service.llm  # 获取 LLM 实例
+                self._llm = llm_service  # 使用统一服务，包含 Ollama/OpenAI-compatible 降级链
             except Exception:  # 导入失败
                 self._llm = None  # 设为 None 表示不可用
         return self._llm  # 返回 LLM 实例
 
     def _rewrite_with_llm(self, question: str, conversation_context: str, llm) -> RewriteResult:  # 使用 LLM 进行语义改写
         """LLM 语义改写"""  # 方法文档字符串
-        from langchain_core.prompts import PromptTemplate  # 导入 LangChain 的提示模板类
-        from langchain_core.output_parsers import StrOutputParser  # 导入字符串输出解析器
-
-        prompt = PromptTemplate.from_template(  # 从模板字符串创建提示模板
-            """请对以下用户问题进行改写，目标是提升知识库检索的召回率。
+        prompt = """请对以下用户问题进行改写，目标是提升知识库检索的召回率。
 
 改写规则：
 1. 补全省略的主语/宾语
@@ -179,14 +175,18 @@ class Planner:  # 任务规划器类，负责分析任务、规划执行步骤�
 
 用户问题：{question}
 
-请直接输出改写后的问题，不要解释。"""
-        )  # 提示模板包含 {conversation_context} 和 {question} 占位符
+请直接输出改写后的问题，不要解释。""".format(
+            question=question,
+            conversation_context=conversation_context or "无",
+        )
 
-        chain = prompt | llm | StrOutputParser()  # LangChain 的管道操作符 |，将模板->LLM->解析器串联成处理链，类似 Java 的 Stream.pipeline()
-        rewritten = chain.invoke({  # 调用处理链执行改写
-            "question": question,  # 传入原始问题
-            "conversation_context": conversation_context or "无"  # 传入上下文，如果没有则为 "无"
-        }).strip()  # .strip() 去除首尾空白字符
+        if llm.llm:
+            rewritten = llm.generate(prompt, temperature=0.1, max_tokens=160).strip()
+        else:
+            rewritten = llm._generate_with_fallback_models(prompt, temperature=0.1, max_tokens=160)
+            if not rewritten:
+                raise RuntimeError("No generation model is available for semantic rewrite")
+            rewritten = rewritten.strip()
 
         return RewriteResult(  # 返回改写结果
             original_question=question,  # 原始问题
@@ -220,20 +220,18 @@ class Planner:  # 任务规划器类，负责分析任务、规划执行步骤�
                 suggestions=["建议补充相关知识文档", "尝试使用不同的关键词检索"]  # 改进建议
             )
 
-        if scores is None:  # 如果没有提供分数
-            scores = [0.5] * len(chunks)  # 为每个片段设置默认分数 0.5，[0.5] * n 创建包含 n 个 0.5 的列表
-
-        low_score_count = sum(1 for s in scores if s < config.RAG_SIMILARITY_THRESHOLD)  # 统计低分结果数量
-        if low_score_count > len(scores) * 0.5:  # 如果超过一半的结果都是低分
+        valid_scores = [float(score) for score in (scores or []) if isinstance(score, (int, float))]
+        low_score_count = sum(1 for score in valid_scores if score < config.RAG_SIMILARITY_THRESHOLD)
+        if valid_scores and low_score_count > len(valid_scores) * 0.5:  # 如果超过一半的结果都是低分
             return SufficiencyResult(  # 返回不充分的结果
                 is_sufficient=False,  # 不充分
                 confidence=0.8,  # 置信度 0.8
-                reasoning=f"大部分检索结果相似度较低（{low_score_count}/{len(chunks)}低于阈值）",  # f-string 格式化原因
+                reasoning=f"大部分检索结果相似度较低（{low_score_count}/{len(valid_scores)}低于阈值）",  # f-string 格式化原因
                 missing_aspects=["高质量检索结果"],  # 缺少的方面
                 suggestions=["优化检索query", "增加同义词扩展"]  # 改进建议
             )
 
-        coverage = min(1.0, len(chunks) * 0.3)  # 计算覆盖度，每个片段贡献 0.3，上限为 1.0
+        coverage = min(1.0, len(chunks) * 0.5)  # 单个高质量片段即可达到最低覆盖要求
         if coverage < 0.5:  # 如果覆盖度低于 0.5
             return SufficiencyResult(  # 返回不充分的结果
                 is_sufficient=False,  # 不充分
@@ -268,7 +266,13 @@ class Planner:  # 任务规划器类，负责分析任务、规划执行步骤�
             return steps  # 返回闲聊的步骤列表
 
         if intent.intent == IntentType.IDENTITY_QUERY:  # 如果意图是身份查询（如"你是谁"）
-            return ["identity_answer"]  # 直接返回身份回答步骤
+            steps = []
+            if has_conversation:
+                steps.append("memory_read")
+            steps.append("identity_answer")
+            if has_conversation:
+                steps.append("memory_write")
+            return steps
 
         if intent.intent == IntentType.KNOWLEDGE_QA:  # 如果意图是知识问答
             steps = []  # 初始化步骤列表

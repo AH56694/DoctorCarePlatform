@@ -24,6 +24,10 @@ class ConfigManager:  # 定义配置管理器类，类似 Java 中的 class，�
         self.OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
         self.OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:0.5b")
         self.LOCAL_LLM_TIMEOUT_SECONDS = int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "45"))
+        self.LLM_QUESTION_MAX_CHARS = int(os.getenv("LLM_QUESTION_MAX_CHARS", "9000"))
+        self.LLM_CONVERSATION_CONTEXT_MAX_CHARS = int(os.getenv("LLM_CONVERSATION_CONTEXT_MAX_CHARS", "9000"))
+        self.LLM_KNOWLEDGE_CONTEXT_MAX_CHARS = int(os.getenv("LLM_KNOWLEDGE_CONTEXT_MAX_CHARS", "12000"))
+        self.LLM_PROMPT_MAX_CHARS = int(os.getenv("LLM_PROMPT_MAX_CHARS", "32000"))
         self.OPENAI_COMPATIBLE_BASE_URL = os.getenv("OPENAI_COMPATIBLE_BASE_URL", "").rstrip("/")
         self.OPENAI_COMPATIBLE_API_KEY = os.getenv("OPENAI_COMPATIBLE_API_KEY", "")
         self.OPENAI_COMPATIBLE_MODEL = os.getenv("OPENAI_COMPATIBLE_MODEL", "")
@@ -57,6 +61,12 @@ class ConfigManager:  # 定义配置管理器类，类似 Java 中的 class，�
         )  # Redis 密码，默认为空
         redis_path = (parsed_redis.path or "").lstrip("/") if parsed_redis else ""
         self.REDIS_DB = int(os.getenv("REDIS_DB", redis_path or "0"))  # Redis 数据库编号（0-15），默认使用 0 号库
+        self.MEMORY_COMPRESS_THRESHOLD = int(os.getenv("MEMORY_COMPRESS_THRESHOLD", "10"))
+        self.MEMORY_KEEP_RECENT = int(os.getenv("MEMORY_KEEP_RECENT", "6"))
+        self.MEMORY_MAX_MESSAGES = int(os.getenv("MEMORY_MAX_MESSAGES", "200"))
+        self.MEMORY_CONTEXT_MAX_CHARS = int(os.getenv("MEMORY_CONTEXT_MAX_CHARS", "12000"))
+        self.MEMORY_HYDRATE_FROM_MYSQL = os.getenv("MEMORY_HYDRATE_FROM_MYSQL", "true").lower() == "true"
+        self.MEMORY_EXTRACT_USER_PREFERENCES = os.getenv("MEMORY_EXTRACT_USER_PREFERENCES", "false").lower() == "true"
 
         # MySQL Configuration
         self.DB_HOST = os.getenv("MYSQL_HOST", "localhost")  # MySQL 主机地址，默认 localhost
@@ -69,6 +79,7 @@ class ConfigManager:  # 定义配置管理器类，类似 Java 中的 class，�
         self.USE_MILVUS = os.getenv("USE_MILVUS", "true").lower() == "true"  # 是否使用 Milvus（布尔值），.lower() 统一转小写后与 "true" 比较，类似 Java 的 equalsIgnoreCase
         self.VECTOR_STORE_PERSIST_DIR = os.getenv("VECTOR_STORE_PERSIST_DIR", "./faiss_index")  # FAISS 向量库持久化目录，默认 ./faiss_index
         self.VECTOR_STORE_COLLECTION_NAME = os.getenv("VECTOR_STORE_COLLECTION_NAME", "ai_knowledge_collection")  # Milvus 集合名称（类似 MySQL 表名），默认 ai_knowledge_collection
+        self.VECTOR_STORE_METRIC_TYPE = os.getenv("VECTOR_STORE_METRIC_TYPE", "COSINE").upper()
 
         # RAG safety configuration. These defaults make medical/knowledge answers evidence-first.
         self.RAG_STRICT_MODE = os.getenv("RAG_STRICT_MODE", "true").lower() == "true"
@@ -128,6 +139,7 @@ class ConfigManager:  # 定义配置管理器类，类似 Java 中的 class，�
             "USE_MILVUS": self.USE_MILVUS,  # 是否使用 Milvus
             "VECTOR_STORE_PERSIST_DIR": self.VECTOR_STORE_PERSIST_DIR,  # 向量库持久化目录
             "VECTOR_STORE_COLLECTION_NAME": self.VECTOR_STORE_COLLECTION_NAME,  # Milvus 集合名称
+            "VECTOR_STORE_METRIC_TYPE": self.VECTOR_STORE_METRIC_TYPE,
             "RAG_STRICT_MODE": self.RAG_STRICT_MODE,
             "RAG_SIMILARITY_THRESHOLD": self.RAG_SIMILARITY_THRESHOLD,
             "RAG_TOP_K": self.RAG_TOP_K,
@@ -140,6 +152,10 @@ class ConfigManager:  # 定义配置管理器类，类似 Java 中的 class，�
             "CHUNK_SIZE": self.CHUNK_SIZE,  # 文本块最大字符数
             "CHUNK_OVERLAP": self.CHUNK_OVERLAP,  # 文本块重叠字符数
             "MIN_CHUNK_SIZE": self.MIN_CHUNK_SIZE,  # 文本块最小字符数
+            "MEMORY_COMPRESS_THRESHOLD": self.MEMORY_COMPRESS_THRESHOLD,
+            "MEMORY_KEEP_RECENT": self.MEMORY_KEEP_RECENT,
+            "MEMORY_MAX_MESSAGES": self.MEMORY_MAX_MESSAGES,
+            "MEMORY_CONTEXT_MAX_CHARS": self.MEMORY_CONTEXT_MAX_CHARS,
             "TESSERACT_PATH": self.TESSERACT_PATH,  # Tesseract OCR 路径
             "TEMP_DIR": self.TEMP_DIR,  # 临时文件目录
             "LOG_LEVEL": self.LOG_LEVEL,  # 日志级别

@@ -55,8 +55,10 @@ class RedisClient:  # 定义 Redis 客户端类，封装会话存储操作
         """清空会话"""  # 方法的 docstring
         key = f"conversation:{conversation_id}:messages"  # 消息列表的键名
         summary_key = f"conversation:{conversation_id}:summary"  # 会话摘要的键名
+        summary_count_key = f"conversation:{conversation_id}:summary_count"
         self.client.delete(key)  # 删除消息列表
         self.client.delete(summary_key)  # 删除会话摘要
+        self.client.delete(summary_count_key)
         logger.info(f"Cleared conversation {conversation_id}")  # 记录清空操作
 
     def get_summary(self, conversation_id: str) -> str:  # 定义获取会话摘要的方法
@@ -64,10 +66,28 @@ class RedisClient:  # 定义 Redis 客户端类，封装会话存储操作
         summary_key = f"conversation:{conversation_id}:summary"  # 构造摘要键名
         return self.client.get(summary_key)  # get 获取字符串值（如果键不存在返回 None）
 
-    def set_summary(self, conversation_id: str, summary: str, expire: int = 3600):  # 定义设置会话摘要的方法，expire 默认 3600 秒（1小时）
+    def get_summary_count(self, conversation_id: str) -> int:
+        summary_count_key = f"conversation:{conversation_id}:summary_count"
+        value = self.client.get(summary_count_key)
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def set_summary(
+        self,
+        conversation_id: str,
+        summary: str,
+        expire: int = 3600,
+        covered_count: int = 0,
+    ):
         """设置会话摘要"""  # 方法的 docstring
         summary_key = f"conversation:{conversation_id}:summary"  # 构造摘要键名
-        self.client.setex(summary_key, expire, summary)  # setex 设置键值对并指定过期时间（SET EX 的原子操作）
+        summary_count_key = f"conversation:{conversation_id}:summary_count"
+        pipeline = self.client.pipeline()
+        pipeline.setex(summary_key, expire, summary)
+        pipeline.setex(summary_count_key, expire, max(0, int(covered_count)))
+        pipeline.execute()
         logger.debug(f"Set summary for conversation {conversation_id}")  # 记录设置操作
 
 # 创建全局实例
