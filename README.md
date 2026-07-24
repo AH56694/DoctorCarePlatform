@@ -114,6 +114,7 @@ cd python-service
 
 - 账号与身份：手机号注册/登录，多角色切换，患者/护理人员资料维护，护理资质提交与审核。
 - 护理匹配：患者发布护理招聘，护理人员应聘，患者定向邀请，匹配后自动建立沟通会话。
+- 个性化招聘推荐：原护理人员列表接口内置 PyTorch 隐式反馈推荐，首次使用在合格候选池内随机探索，后续依据筛选、查看、沟通、邀请和审核行为调整顺序。
 - 沟通与评价：护理会话、消息发送、服务评价、护理人员评分刷新。
 - 智能问诊：前端流式问答，后端保存 AI 会话与消息，Python 服务返回答案、引用来源、步骤和工具调用轨迹。
 - 管理后台：用户状态、证书审核、AI 模型配置、内容巡检、知识库入库/删除和管理日志。
@@ -166,7 +167,7 @@ Python 智能问诊与知识检索接口：
 
 - `users`, `user_roles`
 - `patient_profiles`, `caregiver_profiles`, `certifications`
-- `job_postings`, `applications`, `invitations`
+- `job_postings`, `applications`, `invitations`, `recruitment_interactions`
 - `conversations`, `messages`
 - `ai_sessions`, `ai_messages`, `medical_cases`
 - `ai_model_configs`, `ai_knowledge_chunks`, `ai_semantic_cache`
@@ -179,11 +180,51 @@ Python AI 服务兼容表包括：
 - `user_memory`
 - `agent_run`, `tool_call`
 
+## PyTorch 招聘推荐
+
+招聘推荐不增加新的前端业务接口，继续使用：
+
+```text
+GET /api/v1/jobs/caregivers/available
+```
+
+列表接口支持可选的 `patient_id`、`job_id`、`city`、`keyword` 和
+`min_experience` 参数。护理详情、沟通、邀请和应聘审核等原有接口会记录推荐反馈。
+模型缺失或用户尚无训练向量时，系统自动使用实时行为相似度和随机探索排序。
+
+本地项目 MySQL 映射到 `3307` 时，可以一次性生成演示数据并训练模型：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-recommendation.ps1
+```
+
+默认生成 12 名演示患者、60 名演示护理人员、招聘岗位、应聘记录和推荐行为，
+模型输出到忽略版本控制的 `.local-models/recruitment_recommender.pt`。
+
+演示账号：
+
+```text
+患者手机号：13990000000 ～ 13990000011
+护理手机号：13880000000 ～ 13880000059
+统一密码：demo123456
+```
+
+需要单独重新训练时：
+
+```powershell
+.\.venv\Scripts\python.exe .\scripts\train-recruitment-recommender.py `
+  --database-url "mysql+pymysql://root:change-me@127.0.0.1:3307/doctor_care_platform?charset=utf8mb4"
+```
+
 ## 重要配置
 
 | 变量 | 说明 |
 | --- | --- |
+| `APP_ENV` | 运行环境；设为 `production`/`prod` 时启用生产密钥与示例密码阻断检查 |
 | `DATABASE_URL` | 后端 SQLAlchemy 数据库连接 |
+| `AUTH_SECRET_KEY` | JWT 签名密钥；生产环境至少 32 个字符，禁止使用开发默认值 |
+| `AUTH_TOKEN_EXPIRE_MINUTES` | 登录访问令牌有效期，默认 120 分钟 |
+| `AUTH_ISSUER` | JWT 签发方，默认 `doctor-care-platform` |
 | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USERNAME`, `MYSQL_PASSWORD` | Python 服务访问 MySQL |
 | `REDIS_URL` | 后端和 Python 服务 Redis 连接 |
 | `RAG_SERVICE_URL` | 后端调用 Python 服务的基础地址 |
@@ -201,6 +242,8 @@ Python AI 服务兼容表包括：
 
 ## 生产注意事项
 
+- 部署本次招聘安全升级前执行 `.\.venv\Scripts\alembic.exe upgrade head`，为应聘和邀请增加幂等字段及唯一约束。
+- 前端所有受保护请求必须携带登录返回的 Bearer Token；失效令牌需要重新登录。
 - 为 MySQL 配置独立账号、最小权限、备份与恢复策略。
 - 为模型 API key、短信密钥、数据库密码启用生产级密钥管理。
 - 为医疗知识来源建立授权、版本、审计和更新流程。

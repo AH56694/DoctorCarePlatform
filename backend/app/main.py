@@ -8,6 +8,17 @@ from backend.app.db.session import engine
 
 
 def create_app() -> FastAPI:
+    if settings.app_env.lower() in {"production", "prod"}:
+        if (
+            settings.auth_secret_key == "development-only-change-me"
+            or len(settings.auth_secret_key) < 32
+        ):
+            raise RuntimeError(
+                "AUTH_SECRET_KEY must be configured with at least 32 characters "
+                "in production"
+            )
+        if "change-me" in settings.database_url:
+            raise RuntimeError("Production database credentials must not use the demo password")
     app = FastAPI(title=settings.project_name, version="0.1.0")
     app.add_middleware(
         CORSMiddleware,

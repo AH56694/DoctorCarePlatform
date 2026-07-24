@@ -1,7 +1,19 @@
 ﻿from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import UserDefinedType
 
@@ -133,18 +145,48 @@ class JobPosting(Base, TimestampMixin):
 
 class Application(Base, TimestampMixin):
     __tablename__ = "applications"
+    __table_args__ = (
+        UniqueConstraint("job_id", "caregiver_id", name="uq_applications_job_caregiver"),
+        UniqueConstraint("idempotency_key", name="uq_applications_idempotency_key"),
+    )
 
     id: Mapped[str] = mapped_column(uuid_type(), primary_key=True, default=lambda: str(uuid4()))
     job_id: Mapped[str] = mapped_column(ForeignKey("job_postings.id", ondelete="CASCADE"))
     caregiver_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
     status: Mapped[str] = mapped_column(String(32), default="submitted")
     cover_letter: Mapped[str] = mapped_column(Text, default="")
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class RecruitmentInteraction(Base, TimestampMixin):
+    __tablename__ = "recruitment_interactions"
+    __table_args__ = (
+        Index("ix_recruitment_interactions_patient_created", "patient_id", "created_at"),
+        Index("ix_recruitment_interactions_caregiver_created", "caregiver_id", "created_at"),
+        Index("ix_recruitment_interactions_job_created", "job_id", "created_at"),
+        Index("ix_recruitment_interactions_action_created", "action_type", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(uuid_type(), primary_key=True, default=lambda: str(uuid4()))
+    patient_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    caregiver_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    job_id: Mapped[str | None] = mapped_column(
+        ForeignKey("job_postings.id", ondelete="SET NULL"), nullable=True
+    )
+    action_type: Mapped[str] = mapped_column(String(32), index=True)
+    action_weight: Mapped[float] = mapped_column(Float, default=0)
+    context_json: Mapped[dict] = mapped_column(json_type(), default=dict)
+    request_id: Mapped[str] = mapped_column(String(64), default="", index=True)
+    model_version: Mapped[str] = mapped_column(String(120), default="")
 
 
 class Invitation(Base, TimestampMixin):
     __tablename__ = "invitations"
     __table_args__ = (
         UniqueConstraint("patient_id", "caregiver_id", "job_id", name="uq_invitations_patient_caregiver_job"),
+        UniqueConstraint("idempotency_key", name="uq_invitations_idempotency_key"),
     )
 
     id: Mapped[str] = mapped_column(uuid_type(), primary_key=True, default=lambda: str(uuid4()))
@@ -153,6 +195,7 @@ class Invitation(Base, TimestampMixin):
     job_id: Mapped[str | None] = mapped_column(ForeignKey("job_postings.id", ondelete="SET NULL"), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending")
     message: Mapped[str] = mapped_column(Text, default="")
+    idempotency_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
     responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 

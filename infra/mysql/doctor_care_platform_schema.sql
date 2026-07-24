@@ -150,13 +150,40 @@ CREATE TABLE IF NOT EXISTS applications (
   caregiver_id CHAR(36) NOT NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'submitted',
   cover_letter TEXT NULL,
+  idempotency_key VARCHAR(64) NULL,
   created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
   UNIQUE KEY uq_applications_job_caregiver (job_id, caregiver_id),
+  UNIQUE KEY uq_applications_idempotency_key (idempotency_key),
   KEY ix_applications_caregiver_id (caregiver_id),
   KEY ix_applications_status (status),
   CONSTRAINT fk_applications_job_id FOREIGN KEY (job_id) REFERENCES job_postings(id) ON DELETE CASCADE,
   CONSTRAINT fk_applications_caregiver_id FOREIGN KEY (caregiver_id) REFERENCES users(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+CREATE TABLE IF NOT EXISTS recruitment_interactions (
+  id CHAR(36) PRIMARY KEY,
+  patient_id CHAR(36) NOT NULL,
+  caregiver_id CHAR(36) NULL,
+  job_id CHAR(36) NULL,
+  action_type VARCHAR(32) NOT NULL,
+  action_weight DOUBLE NOT NULL DEFAULT 0,
+  context_json JSON NULL,
+  request_id VARCHAR(64) NOT NULL DEFAULT '',
+  model_version VARCHAR(120) NOT NULL DEFAULT '',
+  created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+  KEY ix_recruitment_interactions_patient_created (patient_id, created_at),
+  KEY ix_recruitment_interactions_caregiver_created (caregiver_id, created_at),
+  KEY ix_recruitment_interactions_job_created (job_id, created_at),
+  KEY ix_recruitment_interactions_action_created (action_type, created_at),
+  KEY ix_recruitment_interactions_request_id (request_id),
+  CONSTRAINT fk_recruitment_interactions_patient_id
+    FOREIGN KEY (patient_id) REFERENCES users(id) ON DELETE CASCADE,
+  CONSTRAINT fk_recruitment_interactions_caregiver_id
+    FOREIGN KEY (caregiver_id) REFERENCES users(id) ON DELETE SET NULL,
+  CONSTRAINT fk_recruitment_interactions_job_id
+    FOREIGN KEY (job_id) REFERENCES job_postings(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS invitations (
@@ -166,10 +193,12 @@ CREATE TABLE IF NOT EXISTS invitations (
   job_id CHAR(36) NULL,
   status VARCHAR(32) NOT NULL DEFAULT 'pending',
   message TEXT NULL,
+  idempotency_key VARCHAR(64) NULL,
   responded_at DATETIME(6) NULL,
   created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
   updated_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
   UNIQUE KEY uq_invitations_patient_caregiver_job (patient_id, caregiver_id, job_id),
+  UNIQUE KEY uq_invitations_idempotency_key (idempotency_key),
   KEY ix_invitations_caregiver_id (caregiver_id),
   KEY ix_invitations_status (status),
   CONSTRAINT fk_invitations_patient_id FOREIGN KEY (patient_id) REFERENCES users(id),

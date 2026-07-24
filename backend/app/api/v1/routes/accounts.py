@@ -1,9 +1,9 @@
-﻿from base64 import urlsafe_b64encode
-from uuid import uuid4
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session, selectinload
 
+from backend.app.api.deps import get_current_user, require_admin_user
 from backend.app.db.models import CaregiverProfile, Certification, PatientProfile, User, UserRole
 from backend.app.db.session import get_db
 from backend.app.schemas.accounts import (
@@ -22,7 +22,7 @@ from backend.app.schemas.accounts import (
     UserRegister,
     UserRoleRead,
 )
-from backend.app.services.auth import hash_password, verify_password
+from backend.app.services.auth import hash_password, issue_access_token, verify_password
 from backend.app.services.sms import SmsNotificationService
 
 router = APIRouter()
@@ -59,11 +59,6 @@ def _review_status_or_400(review_status: str) -> str:
     if normalized not in VALID_REVIEW_STATUSES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid review status")
     return normalized
-
-
-def _issue_demo_token(user_id: str) -> str:
-    raw = f"{user_id}:{uuid4()}".encode("utf-8")
-    return urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
 def _ensure_role(db: Session, user: User, role: str, *, active: bool = False) -> UserRole:
@@ -153,6 +148,15 @@ def _account_read(user: User) -> AccountRead:
     )
 
 
+def _require_self_or_admin(current_user: User, user_id: str) -> None:
+    is_admin = any(role.role == "admin" for role in current_user.roles)
+    if current_user.id != user_id and not is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot access another account",
+        )
+
+
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 async def register(payload: UserRegister, db: Session = Depends(get_db)) -> AuthResponse:
     initial_role = _role_or_400(payload.initial_role)
@@ -174,7 +178,7 @@ async def register(payload: UserRegister, db: Session = Depends(get_db)) -> Auth
         db.add(CaregiverProfile(user_id=user.id, verification_status="pending"))
     db.commit()
     user = _load_user(db, user.id)
-    return AuthResponse(access_token=_issue_demo_token(user.id), account=_account_read(user))
+    return AuthResponse(access_token=issue_access_token(user.id), account=_account_read(user))
 
 
 @router.post("/login", response_model=AuthResponse)
@@ -182,17 +186,33 @@ async def login(payload: UserLogin, db: Session = Depends(get_db)) -> AuthRespon
     user = db.query(User).filter(User.phone == payload.phone).first()
     if not user or not verify_password(payload.password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid phone or password")
+    if user.status != "active":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Account is unavailable",
+        )
     user = _load_user(db, user.id)
-    return AuthResponse(access_token=_issue_demo_token(user.id), account=_account_read(user))
+    return AuthResponse(access_token=issue_access_token(user.id), account=_account_read(user))
 
 
 @router.get("/{user_id}/identity", response_model=AccountRead)
-async def get_identity(user_id: str, db: Session = Depends(get_db)) -> AccountRead:
+async def get_identity(
+    user_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> AccountRead:
+    _require_self_or_admin(current_user, user_id)
     return _account_read(_load_user(db, user_id))
 
 
 @router.post("/{user_id}/roles", response_model=AccountRead)
-async def create_role(user_id: str, payload: RoleCreateRequest, db: Session = Depends(get_db)) -> AccountRead:
+async def create_role(
+    user_id: str,
+    payload: RoleCreateRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> AccountRead:
+    _require_self_or_admin(current_user, user_id)
     user = _load_user(db, user_id)
     role = _role_or_400(payload.role)
     _ensure_role(db, user, role)
@@ -205,7 +225,13 @@ async def create_role(user_id: str, payload: RoleCreateRequest, db: Session = De
 
 
 @router.post("/{user_id}/roles/switch", response_model=AccountRead)
-async def switch_role(user_id: str, payload: RoleSwitchRequest, db: Session = Depends(get_db)) -> AccountRead:
+async def switch_role(
+    user_id: str,
+    payload: RoleSwitchRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> AccountRead:
+    _require_self_or_admin(current_user, user_id)
     user = _load_user(db, user_id)
     _activate_role(user, payload.role)
     db.commit()
@@ -214,8 +240,12 @@ async def switch_role(user_id: str, payload: RoleSwitchRequest, db: Session = De
 
 @router.put("/{user_id}/profiles/patient", response_model=AccountRead)
 async def upsert_patient_profile(
-    user_id: str, payload: PatientProfileUpdate, db: Session = Depends(get_db)
+    user_id: str,
+    payload: PatientProfileUpdate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
 ) -> AccountRead:
+    _require_self_or_admin(current_user, user_id)
     user = _load_user(db, user_id)
     _ensure_role(db, user, "patient")
     profile = user.patient_profile or PatientProfile(user_id=user.id)
@@ -231,8 +261,12 @@ async def upsert_patient_profile(
 
 @router.put("/{user_id}/profiles/caregiver", response_model=AccountRead)
 async def upsert_caregiver_profile(
-    user_id: str, payload: CaregiverProfileUpdate, db: Session = Depends(get_db)
+    user_id: str,
+    payload: CaregiverProfileUpdate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
 ) -> AccountRead:
+    _require_self_or_admin(current_user, user_id)
     user = _load_user(db, user_id)
     _ensure_role(db, user, "caregiver")
     profile = user.caregiver_profile or CaregiverProfile(user_id=user.id)
@@ -251,8 +285,12 @@ async def upsert_caregiver_profile(
 
 @router.post("/{user_id}/certifications", response_model=CertificationRead, status_code=status.HTTP_201_CREATED)
 async def submit_certification(
-    user_id: str, payload: CertificationCreate, db: Session = Depends(get_db)
+    user_id: str,
+    payload: CertificationCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
 ) -> CertificationRead:
+    _require_self_or_admin(current_user, user_id)
     user = _load_user(db, user_id)
     _ensure_role(db, user, "caregiver")
     caregiver = user.caregiver_profile or CaregiverProfile(user_id=user.id, verification_status="pending")
@@ -280,7 +318,10 @@ async def submit_certification(
 
 @router.post("/certifications/{certification_id}/review", response_model=CertificationRead)
 async def review_certification(
-    certification_id: str, payload: CertificationReview, db: Session = Depends(get_db)
+    certification_id: str,
+    payload: CertificationReview,
+    current_user: Annotated[User, Depends(require_admin_user)],
+    db: Session = Depends(get_db),
 ) -> CertificationRead:
     certification = db.query(Certification).filter(Certification.id == certification_id).first()
     if not certification:

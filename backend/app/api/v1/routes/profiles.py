@@ -1,7 +1,10 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
+from backend.app.api.deps import get_current_user
 from backend.app.db.models import (
     CaregiverProfile,
     Certification,
@@ -10,8 +13,10 @@ from backend.app.db.models import (
     PatientProfile,
     Review,
     User,
+    UserRole,
 )
 from backend.app.db.session import get_db
+from backend.app.recommendation.service import record_interaction
 from backend.app.schemas.profiles import (
     CaregiverAvailabilityUpdate,
     CaregiverResumeRead,
@@ -118,7 +123,17 @@ def _caregiver_resume_read(db: Session, profile: CaregiverProfile) -> CaregiverR
 
 
 @router.get("/patients/{user_id}", response_model=PatientHomepageRead)
-async def get_patient_homepage(user_id: str, db: Session = Depends(get_db)) -> PatientHomepageRead:
+async def get_patient_homepage(
+    user_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> PatientHomepageRead:
+    is_admin = any(role.role == "admin" for role in current_user.roles)
+    if current_user.id != user_id and not is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Patient profiles are private",
+        )
     user = _get_user(db, user_id)
     profile = db.query(PatientProfile).filter(PatientProfile.user_id == user_id).first()
     if not profile:
@@ -170,12 +185,28 @@ async def get_patient_homepage(user_id: str, db: Session = Depends(get_db)) -> P
 
 @router.get("/caregivers", response_model=list[CaregiverResumeRead])
 async def list_caregiver_resumes(
+    current_user: Annotated[User, Depends(get_current_user)],
     city: str | None = None,
     keyword: str | None = None,
     available_only: bool = Query(default=False),
     db: Session = Depends(get_db),
 ) -> list[CaregiverResumeRead]:
-    query = db.query(CaregiverProfile).options(selectinload(CaregiverProfile.certifications))
+    query = (
+        db.query(CaregiverProfile)
+        .options(selectinload(CaregiverProfile.certifications))
+        .join(User, User.id == CaregiverProfile.user_id)
+        .join(
+            UserRole,
+            (UserRole.user_id == CaregiverProfile.user_id)
+            & (UserRole.role == "caregiver"),
+        )
+        .filter(
+            CaregiverProfile.id_verified.is_(True),
+            CaregiverProfile.verification_status == "approved",
+            User.status == "active",
+            UserRole.verification_status == "approved",
+        )
+    )
     if available_only:
         query = query.filter(CaregiverProfile.is_available.is_(True))
     if city:
@@ -189,7 +220,13 @@ async def list_caregiver_resumes(
 
 
 @router.get("/caregivers/{user_id}", response_model=CaregiverResumeRead)
-async def get_caregiver_resume(user_id: str, db: Session = Depends(get_db)) -> CaregiverResumeRead:
+async def get_caregiver_resume(
+    user_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    viewer_id: str | None = None,
+    job_id: str | None = None,
+    db: Session = Depends(get_db),
+) -> CaregiverResumeRead:
     profile = (
         db.query(CaregiverProfile)
         .options(selectinload(CaregiverProfile.certifications))
@@ -198,13 +235,72 @@ async def get_caregiver_resume(user_id: str, db: Session = Depends(get_db)) -> C
     )
     if not profile:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Caregiver profile not found")
+    is_admin = any(role.role == "admin" for role in current_user.roles)
+    if current_user.id != user_id and not is_admin:
+        approved_role = (
+            db.query(UserRole)
+            .filter(
+                UserRole.user_id == user_id,
+                UserRole.role == "caregiver",
+                UserRole.verification_status == "approved",
+            )
+            .first()
+        )
+        if (
+            not profile.id_verified
+            or profile.verification_status != "approved"
+            or not profile.user
+            or profile.user.status != "active"
+            or not approved_role
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Caregiver profile not found",
+            )
+    if viewer_id and viewer_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="viewer_id must match the authenticated user",
+        )
+    if current_user.id != user_id and current_user.active_role == "patient":
+        if job_id:
+            job = db.query(JobPosting).filter(JobPosting.id == job_id).first()
+            if not job or job.employer_id != current_user.id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only the job owner can attach a job to this view",
+                )
+        record_interaction(
+            db,
+            patient_id=current_user.id,
+            caregiver_id=user_id,
+            job_id=job_id,
+            action_type="view",
+            context={"source": "caregiver_profile"},
+        )
     return _caregiver_resume_read(db, profile)
 
 
 @router.patch("/caregivers/{user_id}/availability", response_model=CaregiverResumeRead)
 async def update_caregiver_availability(
-    user_id: str, payload: CaregiverAvailabilityUpdate, db: Session = Depends(get_db)
+    user_id: str,
+    payload: CaregiverAvailabilityUpdate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
 ) -> CaregiverResumeRead:
+    if current_user.id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot update another caregiver's availability",
+        )
+    if (
+        current_user.active_role != "caregiver"
+        or not any(role.role == "caregiver" for role in current_user.roles)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Required role: caregiver",
+        )
     profile = (
         db.query(CaregiverProfile)
         .options(selectinload(CaregiverProfile.certifications))

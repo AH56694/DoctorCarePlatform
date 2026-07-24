@@ -1,7 +1,10 @@
+from typing import Annotated
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from backend.app.api.deps import get_current_user
 from backend.app.db.models import CaregiverProfile, Conversation, Review, User
 from backend.app.db.session import get_db
 from backend.app.schemas.reviews import ReviewCreate, ReviewRead, ReviewUpdate, TrustSummaryRead
@@ -97,7 +100,16 @@ async def _notify_reviewee(db: Session, review: Review) -> None:
 
 
 @router.post("", response_model=ReviewRead, status_code=status.HTTP_201_CREATED)
-async def create_review(payload: ReviewCreate, db: Session = Depends(get_db)) -> Review:
+async def create_review(
+    payload: ReviewCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> Review:
+    if payload.reviewer_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="reviewer_id must be the authenticated user",
+        )
     _get_user(db, payload.reviewer_id)
     _get_user(db, payload.reviewee_id)
     conversation = _get_conversation(db, payload.conversation_id)
@@ -123,6 +135,7 @@ async def create_review(payload: ReviewCreate, db: Session = Depends(get_db)) ->
 
 @router.get("", response_model=list[ReviewRead])
 async def list_reviews(
+    current_user: Annotated[User, Depends(get_current_user)],
     conversation_id: str | None = None,
     user_id: str | None = Query(default=None, description="Reviews received by this user"),
     reviewer_id: str | None = None,
@@ -139,13 +152,26 @@ async def list_reviews(
 
 
 @router.get("/trust/{user_id}", response_model=TrustSummaryRead)
-async def get_trust_summary(user_id: str, db: Session = Depends(get_db)) -> TrustSummaryRead:
+async def get_trust_summary(
+    user_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> TrustSummaryRead:
     return _trust_summary(db, user_id)
 
 
 @router.get("/conversations/{conversation_id}", response_model=list[ReviewRead])
-async def list_conversation_reviews(conversation_id: str, db: Session = Depends(get_db)) -> list[Review]:
-    _get_conversation(db, conversation_id)
+async def list_conversation_reviews(
+    conversation_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> list[Review]:
+    conversation = _get_conversation(db, conversation_id)
+    if current_user.id not in {conversation.participant_a, conversation.participant_b}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only participants can view conversation reviews",
+        )
     return (
         db.query(Review)
         .filter(Review.conversation_id == conversation_id)
@@ -158,9 +184,15 @@ async def list_conversation_reviews(conversation_id: str, db: Session = Depends(
 async def update_review(
     review_id: str,
     payload: ReviewUpdate,
+    current_user: Annotated[User, Depends(get_current_user)],
     reviewer_id: str = Query(...),
     db: Session = Depends(get_db),
 ) -> Review:
+    if reviewer_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="reviewer_id must be the authenticated user",
+        )
     review = _get_review(db, review_id)
     if review.reviewer_id != reviewer_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the reviewer can update this review")

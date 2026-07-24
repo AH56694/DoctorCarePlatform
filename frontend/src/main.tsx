@@ -520,8 +520,20 @@ function clearCurrentSession() {
   localStorage.removeItem(currentSessionKey);
 }
 
+function apiFetch(input: RequestInfo | URL, init?: RequestInit) {
+  const headers = new Headers(init?.headers);
+  const token = loadCurrentSession()?.access_token;
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  return window.fetch(input, {
+    ...init,
+    headers
+  });
+}
+
 async function fetchAccountIdentity(userId: string): Promise<AccountRead> {
-  const response = await fetch(`/api/v1/accounts/${encodeURIComponent(userId)}/identity`);
+  const response = await apiFetch(`/api/v1/accounts/${encodeURIComponent(userId)}/identity`);
   if (!response.ok) {
     throw new Error(await response.text() || `接口返回 ${response.status}`);
   }
@@ -578,7 +590,8 @@ function App() {
         if (cancelled) {
           return;
         }
-        setAccountState(cachedAccount);
+        clearCurrentSession();
+        setAccountState(null);
       })
       .finally(() => {
         if (!cancelled) {
@@ -740,7 +753,7 @@ function knowledgeStatusLabel(status: string | undefined | null) {
 }
 
 function isAdminAccount(account: AccountRead) {
-  return account.phone.toLowerCase().startsWith("admin") || account.roles.some((role) => role.role === "admin");
+  return account.roles.some((role) => role.role === "admin");
 }
 
 type RememberedAccount = {
@@ -791,7 +804,7 @@ function AuthGate({ onAuthenticated }: { onAuthenticated: (result: AuthResponse)
   });
 
   async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(path, {
+    const response = await apiFetch(path, {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -1013,7 +1026,7 @@ function AccountsIdentity({
   const [caseUploads, setCaseUploads] = useState<Array<{ file_url: string; summary: string; description: string }>>([]);
 
   async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(path, {
+    const response = await apiFetch(path, {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -1379,7 +1392,7 @@ function Consultation({ account }: { account: AccountRead }) {
   const [error, setError] = useState("");
 
   async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const result = await fetch(path, {
+    const result = await apiFetch(path, {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -1484,7 +1497,7 @@ function Consultation({ account }: { account: AccountRead }) {
       intermediate_conclusions: []
     });
     try {
-      const result = await fetch("/api/v1/ai/chat/stream", {
+      const result = await apiFetch("/api/v1/ai/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -2264,6 +2277,8 @@ function summarizeToolCall(toolCall: Record<string, unknown>) {
 }
 
 function Jobs({ account, onOpenChat }: { account: AccountRead; onOpenChat: () => void }) {
+  const isPatient = account.active_role === "patient";
+  const isCaregiver = account.active_role === "caregiver";
   const [jobRows, setJobRows] = useState<JobPosting[]>([]);
   const [applications, setApplications] = useState<JobApplication[]>([]);
   const [caregivers, setCaregivers] = useState<AvailableCaregiver[]>([]);
@@ -2272,7 +2287,7 @@ function Jobs({ account, onOpenChat }: { account: AccountRead; onOpenChat: () =>
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState("");
   const [jobForm, setJobForm] = useState({
-    employer_id: "",
+    employer_id: account.id,
     title: "术后陪护护理",
     city: "上海",
     patient_gender: "女",
@@ -2294,11 +2309,23 @@ function Jobs({ account, onOpenChat }: { account: AccountRead; onOpenChat: () =>
     description: "需要日间恢复观察和日常护理支持。",
     special_requirements: "需要有协助行动经验。"
   });
-  const [applicationForm, setApplicationForm] = useState({ caregiver_id: "", cover_letter: "" });
-  const [invitationForm, setInvitationForm] = useState({ patient_id: "", caregiver_id: "", message: "" });
+  const [applicationForm, setApplicationForm] = useState({
+    caregiver_id: account.active_role === "caregiver" ? account.id : "",
+    cover_letter: ""
+  });
+  const [invitationForm, setInvitationForm] = useState({
+    patient_id: account.id,
+    caregiver_id: "",
+    message: ""
+  });
+  const [caregiverFilters, setCaregiverFilters] = useState({
+    city: "",
+    keyword: "",
+    min_experience: ""
+  });
 
   async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(path, {
+    const response = await apiFetch(path, {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -2316,48 +2343,116 @@ function Jobs({ account, onOpenChat }: { account: AccountRead; onOpenChat: () =>
     setLoading(true);
     setNotice("");
     try {
-      const [jobResult, caregiverResult, invitationResult] = await Promise.all([
+      const [jobResult, invitationResult] = await Promise.all([
         requestJson<JobPosting[]>("/api/v1/jobs?status=published"),
-        requestJson<AvailableCaregiver[]>("/api/v1/jobs/caregivers/available"),
-        requestJson<Invitation[]>("/api/v1/jobs/invitations")
+        isPatient || isCaregiver
+          ? requestJson<Invitation[]>("/api/v1/jobs/invitations")
+          : Promise.resolve([])
+      ]);
+      const ownedJobs = jobResult.filter((job) => job.employer_id === account.id);
+      const selectedStillValid = jobResult.some((job) => job.id === selectedJobId);
+      const nextJobId = isPatient
+        ? (ownedJobs.some((job) => job.id === selectedJobId) ? selectedJobId : ownedJobs[0]?.id || "")
+        : (selectedStillValid ? selectedJobId : jobResult[0]?.id || "");
+      const [caregiverResult, applicationResult] = await Promise.all([
+        isPatient && nextJobId
+          ? fetchRecommendedCaregivers(nextJobId)
+          : Promise.resolve([]),
+        isPatient && nextJobId
+          ? requestJson<JobApplication[]>(`/api/v1/jobs/${nextJobId}/applications`)
+          : isCaregiver
+            ? requestJson<JobApplication[]>(`/api/v1/jobs/caregivers/${account.id}/applications`)
+            : Promise.resolve([])
       ]);
       setJobRows(jobResult);
       setCaregivers(caregiverResult);
+      setApplications(applicationResult);
       setInvitations(invitationResult);
-      setSelectedJobId((current) => current || jobResult[0]?.id || "");
-    } catch {
-      setJobRows(
-        jobs.map((job, index) => ({
-          id: `demo-${index}`,
-          employer_id: "demo-patient",
-          title: job.title,
-          city: job.city,
-          care_type: "demo",
-          care_level: job.status,
-          location: job.patient,
-          budget_cents: Number.parseInt(job.budget, 10) * 100 || 0,
-          status: job.status.toLowerCase(),
-          special_requirements: "",
-          description: job.patient
-        }))
-      );
+      setSelectedJobId(nextJobId);
+    } catch (error) {
+      setJobRows([]);
+      setApplications([]);
       setCaregivers([]);
       setInvitations([]);
-      setNotice("由于后端接口暂不可达，当前显示演示数据。");
+      setSelectedJobId("");
+      setNotice(error instanceof Error ? error.message : "招聘数据加载失败，请稍后重试。");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function fetchRecommendedCaregivers(jobId = selectedJobId) {
+    if (!isPatient || !jobId) {
+      return [];
+    }
+    const knownJob = jobRows.find((job) => job.id === jobId);
+    if (knownJob && knownJob.employer_id !== account.id) {
+      return [];
+    }
+    const params = new URLSearchParams({ job_id: jobId });
+    if (caregiverFilters.city.trim()) {
+      params.set("city", caregiverFilters.city.trim());
+    }
+    if (caregiverFilters.keyword.trim()) {
+      params.set("keyword", caregiverFilters.keyword.trim());
+    }
+    if (caregiverFilters.min_experience) {
+      params.set("min_experience", caregiverFilters.min_experience);
+    }
+    return requestJson<AvailableCaregiver[]>(`/api/v1/jobs/caregivers/available?${params.toString()}`);
+  }
+
+  async function refreshRecommendedCaregivers(jobId = selectedJobId) {
+    if (!jobId) {
+      setNotice("请先发布或选择本人名下的岗位。");
+      return;
+    }
+    setLoading(true);
+    setNotice("");
+    try {
+      setCaregivers(await fetchRecommendedCaregivers(jobId));
+      setNotice("候选人已按本次筛选和历史浏览偏好重新排序。");
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "加载推荐护理人员失败。");
     } finally {
       setLoading(false);
     }
   }
 
   async function loadApplications(jobId = selectedJobId) {
-    if (!jobId) {
+    if (!isPatient || !jobId) {
+      return;
+    }
+    const job = jobRows.find((row) => row.id === jobId);
+    if (job && job.employer_id !== account.id) {
+      setApplications([]);
+      setCaregivers([]);
+      setSelectedJobId(jobId);
+      setNotice("只能管理本人发布岗位的应聘记录和候选人推荐。");
       return;
     }
     try {
       setApplications(await requestJson<JobApplication[]>(`/api/v1/jobs/${jobId}/applications`));
       setSelectedJobId(jobId);
+      setCaregivers(await fetchRecommendedCaregivers(jobId));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "加载应聘记录失败。");
+    }
+  }
+
+  async function selectRecommendedCaregiver(caregiver: AvailableCaregiver) {
+    setInvitationForm((current) => ({ ...current, caregiver_id: caregiver.user_id }));
+    try {
+      const params = new URLSearchParams({ viewer_id: account.id });
+      if (selectedJobId) {
+        params.set("job_id", selectedJobId);
+      }
+      await requestJson<CaregiverResume>(
+        `/api/v1/profiles/caregivers/${caregiver.user_id}?${params.toString()}`
+      );
+      setNotice(`已记录对 ${caregiver.real_name || caregiver.user_id} 的查看偏好。`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : "加载护理人员详情失败。");
     }
   }
 
@@ -2411,17 +2506,18 @@ function Jobs({ account, onOpenChat }: { account: AccountRead; onOpenChat: () =>
   }
 
   async function applyForJob() {
-    if (!selectedJobId || !applicationForm.caregiver_id.trim()) {
-      setNotice("请选择招聘并填写护理方用户编号。");
+    if (!isCaregiver || !selectedJobId) {
+      setNotice("请以护理身份选择招聘后提交应聘。");
       return;
     }
     try {
       const application = await requestJson<JobApplication>(`/api/v1/jobs/${selectedJobId}/applications`, {
         method: "POST",
-        body: JSON.stringify(applicationForm)
+        headers: { "Idempotency-Key": crypto.randomUUID() },
+        body: JSON.stringify({ ...applicationForm, caregiver_id: account.id })
       });
       setNotice(`应聘已提交：${application.id}`);
-      await loadApplications(selectedJobId);
+      setApplications(await requestJson<JobApplication[]>(`/api/v1/jobs/caregivers/${account.id}/applications`));
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "提交应聘失败。");
     }
@@ -2445,13 +2541,14 @@ function Jobs({ account, onOpenChat }: { account: AccountRead; onOpenChat: () =>
   }
 
   async function createInvitation() {
-    if (!invitationForm.patient_id.trim() || !invitationForm.caregiver_id.trim()) {
-      setNotice("请填写病人和护理方用户编号 后再发送邀请。");
+    if (!selectedJobId || !invitationForm.patient_id.trim() || !invitationForm.caregiver_id.trim()) {
+      setNotice("请选择本人发布的岗位和护理方后再发送邀请。");
       return;
     }
     try {
       const invitation = await requestJson<Invitation>("/api/v1/jobs/invitations", {
         method: "POST",
+        headers: { "Idempotency-Key": crypto.randomUUID() },
         body: JSON.stringify({ ...invitationForm, job_id: selectedJobId || null })
       });
       setNotice(`邀请已发送：${invitation.id}`);
@@ -2503,7 +2600,7 @@ function Jobs({ account, onOpenChat }: { account: AccountRead; onOpenChat: () =>
 
   useEffect(() => {
     void refreshJobs();
-  }, []);
+  }, [account.id, account.active_role]);
 
   return (
     <section className="jobsLayout">
@@ -2521,7 +2618,16 @@ function Jobs({ account, onOpenChat }: { account: AccountRead; onOpenChat: () =>
         <div className="tableLike">
           {jobRows.map((job) => (
             <article className={`rowCard selectable ${selectedJobId === job.id ? "selected" : ""}`} key={job.id}>
-              <button className="rowSelect" onClick={() => void loadApplications(job.id)} type="button">
+              <button
+                className="rowSelect"
+                onClick={() => {
+                  setSelectedJobId(job.id);
+                  if (isPatient) {
+                    void loadApplications(job.id);
+                  }
+                }}
+                type="button"
+              >
                 <div>
                   <strong>{job.title}</strong>
                   <span>{job.city || "未填写城市"} / {job.location || job.description || "未填写地点"}</span>
@@ -2536,7 +2642,7 @@ function Jobs({ account, onOpenChat }: { account: AccountRead; onOpenChat: () =>
                 </div>
                 <span className="pill">{statusLabel(job.status)}</span>
               </button>
-              {job.employer_id !== account.id && (
+              {isCaregiver && job.employer_id !== account.id && (
                 <button className="rowActionButton" onClick={() => void openConversation(job.employer_id, "job", job.id)} type="button">
                   沟通
                 </button>
@@ -2546,13 +2652,14 @@ function Jobs({ account, onOpenChat }: { account: AccountRead; onOpenChat: () =>
         </div>
       </article>
 
+      {isPatient && (
       <article className="panel">
         <div className="panelHeader compact">
           <h2>发布招聘</h2>
           <BriefcaseMedical size={20} />
         </div>
         <div className="formGrid jobPublishForm">
-          <input placeholder="病人用户编号" value={jobForm.employer_id} onChange={(event) => setJobForm({ ...jobForm, employer_id: event.target.value })} />
+          <input placeholder="病人用户编号" readOnly value={jobForm.employer_id} />
           <input placeholder="招聘标题" value={jobForm.title} onChange={(event) => setJobForm({ ...jobForm, title: event.target.value })} />
           <select value={jobForm.patient_gender} onChange={(event) => setJobForm({ ...jobForm, patient_gender: event.target.value })}>
             <option value="女">病人性别：女</option>
@@ -2586,48 +2693,90 @@ function Jobs({ account, onOpenChat }: { account: AccountRead; onOpenChat: () =>
           <span>发布</span>
         </button>
       </article>
+      )}
 
       <article className="panel">
         <div className="panelHeader compact">
-          <h2>应聘记录</h2>
+          <h2>{isCaregiver ? "我的应聘" : "岗位应聘记录"}</h2>
           <ClipboardList size={20} />
         </div>
+        {isCaregiver && (
         <div className="formGrid">
-          <input placeholder="护理方用户编号" value={applicationForm.caregiver_id} onChange={(event) => setApplicationForm({ ...applicationForm, caregiver_id: event.target.value })} />
           <input placeholder="应聘说明" value={applicationForm.cover_letter} onChange={(event) => setApplicationForm({ ...applicationForm, cover_letter: event.target.value })} />
         </div>
+        )}
         <div className="buttonRow">
-          <button className="secondaryButton" onClick={applyForJob} type="button">应聘</button>
-          <button className="secondaryButton" onClick={() => void loadApplications()} type="button">加载</button>
+          {isCaregiver && <button className="secondaryButton" onClick={applyForJob} type="button">提交应聘</button>}
+          {isPatient && <button className="secondaryButton" onClick={() => void loadApplications()} type="button">加载所选岗位</button>}
         </div>
         <div className="miniList">
           {applications.map((application) => (
             <div className="miniItem" key={application.id}>
               <div>
-                <strong>{application.caregiver_id}</strong>
+                <strong>{isCaregiver ? `岗位 ${application.job_id}` : application.caregiver_id}</strong>
                 <span>{application.cover_letter || "暂无应聘说明"} / {statusLabel(application.status)}</span>
               </div>
+              {isPatient && (
               <div className="inlineActions">
                 <button title="沟通" onClick={() => void openConversation(application.caregiver_id, "application", application.id)} type="button"><MessageSquareText size={17} /></button>
-                <button title="通过" onClick={() => void reviewApplication(application.id, "accepted")} type="button"><CheckCircle2 size={17} /></button>
-                <button title="拒绝" onClick={() => void reviewApplication(application.id, "rejected")} type="button"><ShieldCheck size={17} /></button>
+                {application.status === "pending" && (
+                  <>
+                    <button title="通过" onClick={() => void reviewApplication(application.id, "accepted")} type="button"><CheckCircle2 size={17} /></button>
+                    <button title="拒绝" onClick={() => void reviewApplication(application.id, "rejected")} type="button"><ShieldCheck size={17} /></button>
+                  </>
+                )}
               </div>
+              )}
             </div>
           ))}
         </div>
       </article>
 
+      {isPatient && (
       <article className="panel wide">
         <div className="panelHeader compact">
-          <h2>邀请护理方</h2>
-          <Handshake size={20} />
+          <div>
+            <h2>智能推荐护理方</h2>
+            <p>首次随机探索；筛选、查看、沟通和邀请会影响下次刷新顺序。</p>
+          </div>
+          <button
+            className="iconButton"
+            onClick={() => void refreshRecommendedCaregivers()}
+            title="按偏好刷新推荐"
+            type="button"
+          >
+            {loading ? <Loader2 className="spin" size={19} /> : <RefreshCw size={19} />}
+          </button>
+        </div>
+        <div className="formGrid directoryFilters">
+          <input
+            placeholder="城市筛选"
+            value={caregiverFilters.city}
+            onChange={(event) => setCaregiverFilters({ ...caregiverFilters, city: event.target.value })}
+          />
+          <input
+            placeholder="护理技能或简介关键词"
+            value={caregiverFilters.keyword}
+            onChange={(event) => setCaregiverFilters({ ...caregiverFilters, keyword: event.target.value })}
+          />
+          <input
+            min="0"
+            placeholder="最低经验年限"
+            type="number"
+            value={caregiverFilters.min_experience}
+            onChange={(event) => setCaregiverFilters({ ...caregiverFilters, min_experience: event.target.value })}
+          />
+          <button className="secondaryButton" onClick={() => void refreshRecommendedCaregivers()} type="button">
+            <Search size={17} />
+            <span>筛选并排序</span>
+          </button>
         </div>
         <div className="caregiverGrid">
           {caregivers.map((caregiver) => (
             <button
               className="caregiverTile"
               key={caregiver.user_id}
-              onClick={() => setInvitationForm({ ...invitationForm, caregiver_id: caregiver.user_id })}
+              onClick={() => void selectRecommendedCaregiver(caregiver)}
               type="button"
             >
               <strong>{caregiver.real_name || caregiver.user_id}</strong>
@@ -2637,13 +2786,24 @@ function Jobs({ account, onOpenChat }: { account: AccountRead; onOpenChat: () =>
           ))}
         </div>
         <div className="formGrid inviteForm">
-          <input placeholder="病人用户编号" value={invitationForm.patient_id} onChange={(event) => setInvitationForm({ ...invitationForm, patient_id: event.target.value })} />
+          <input placeholder="病人用户编号" readOnly value={invitationForm.patient_id} />
           <input placeholder="护理方用户编号" value={invitationForm.caregiver_id} onChange={(event) => setInvitationForm({ ...invitationForm, caregiver_id: event.target.value })} />
           <input placeholder="邀请说明" value={invitationForm.message} onChange={(event) => setInvitationForm({ ...invitationForm, message: event.target.value })} />
           <button className="primaryButton compactButton" onClick={createInvitation} type="button">
             <Send size={18} />
             <span>邀请</span>
           </button>
+        </div>
+      </article>
+      )}
+
+      <article className="panel wide">
+        <div className="panelHeader compact">
+          <div>
+            <h2>{isCaregiver ? "收到的招聘邀请" : "已发送的招聘邀请"}</h2>
+            <p>邀请只对当前登录身份可见，重复操作会返回原业务结果。</p>
+          </div>
+          <Bell size={20} />
         </div>
         <div className="miniList">
           {invitations.map((invitation) => (
@@ -2653,9 +2813,23 @@ function Jobs({ account, onOpenChat }: { account: AccountRead; onOpenChat: () =>
                 <span>{invitation.message || "暂无说明"} / {statusLabel(invitation.status)}</span>
               </div>
               <div className="inlineActions">
-                <button title="沟通" onClick={() => void openConversation(invitation.caregiver_id, "invitation", invitation.id)} type="button"><MessageSquareText size={17} /></button>
-                <button title="接受" onClick={() => void respondInvitation(invitation.id, "accepted")} type="button"><CheckCircle2 size={17} /></button>
-                <button title="拒绝" onClick={() => void respondInvitation(invitation.id, "rejected")} type="button"><ShieldCheck size={17} /></button>
+                <button
+                  title="沟通"
+                  onClick={() => void openConversation(
+                    isCaregiver ? invitation.patient_id : invitation.caregiver_id,
+                    "invitation",
+                    invitation.id
+                  )}
+                  type="button"
+                >
+                  <MessageSquareText size={17} />
+                </button>
+                {isCaregiver && invitation.status === "pending" && (
+                  <>
+                    <button title="接受" onClick={() => void respondInvitation(invitation.id, "accepted")} type="button"><CheckCircle2 size={17} /></button>
+                    <button title="拒绝" onClick={() => void respondInvitation(invitation.id, "rejected")} type="button"><ShieldCheck size={17} /></button>
+                  </>
+                )}
               </div>
             </div>
           ))}
@@ -2686,7 +2860,7 @@ function Profiles({ account, onOpenChat }: { account: AccountRead; onOpenChat: (
   const [conversationReviews, setConversationReviews] = useState<ServiceReview[]>([]);
 
   async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(path, {
+    const response = await apiFetch(path, {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -2724,7 +2898,10 @@ function Profiles({ account, onOpenChat }: { account: AccountRead; onOpenChat: (
     setLoading(true);
     setNotice("");
     try {
-      const result = await requestJson<CaregiverResume>(`/api/v1/profiles/caregivers/${targetId.trim()}`);
+      const params = new URLSearchParams({ viewer_id: account.id });
+      const result = await requestJson<CaregiverResume>(
+        `/api/v1/profiles/caregivers/${targetId.trim()}?${params.toString()}`
+      );
       setCaregiver(result);
       setCaregiverId(result.user_id);
     } catch (error) {
@@ -3079,7 +3256,7 @@ function CareChat({ account }: { account: AccountRead }) {
   const [loading, setLoading] = useState(false);
 
   async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(path, {
+    const response = await apiFetch(path, {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -3228,7 +3405,7 @@ function Verification() {
   });
 
   async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(path, {
+    const response = await apiFetch(path, {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -3490,7 +3667,7 @@ function Knowledge() {
   const [loading, setLoading] = useState(false);
 
   async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(path, {
+    const response = await apiFetch(path, {
       ...init,
       headers: {
         "Content-Type": "application/json",
@@ -3634,7 +3811,7 @@ function Knowledge() {
   async function deleteKnowledgeItem(itemId: string) {
     setNotice("");
     try {
-      const response = await fetch(`/api/v1/admin/knowledge-items/${itemId}`, { method: "DELETE" });
+      const response = await apiFetch(`/api/v1/admin/knowledge-items/${itemId}`, { method: "DELETE" });
       if (!response.ok) {
         const message = await response.text();
         throw new Error(message || `接口返回 ${response.status}`);

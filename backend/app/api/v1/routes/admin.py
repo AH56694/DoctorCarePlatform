@@ -1,4 +1,5 @@
 import asyncio
+from typing import Annotated
 from uuid import UUID
 
 import httpx
@@ -6,13 +7,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
+from backend.app.api.deps import get_current_user
 from backend.app.db.models import (
     AdminLog,
     AiKnowledgeChunk,
     AiMessage,
     AiModelConfig,
     AiSession,
-    Application,
     CaregiverProfile,
     Certification,
     JobPosting,
@@ -167,6 +168,7 @@ async def list_users(
 async def update_user_status(
     user_id: str,
     payload: AdminUserStatusUpdate,
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> AdminUserRead:
     user = _get_user(db, user_id)
@@ -175,7 +177,7 @@ async def update_user_status(
     _log_admin_action(
         db,
         action="user.status_update",
-        admin_id=payload.admin_id,
+        admin_id=current_user.id,
         target_type="user",
         target_id=user.id,
         target=user.phone,
@@ -210,6 +212,7 @@ async def list_certifications(
 async def review_certification(
     certification_id: str,
     payload: AdminCertificationReview,
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> AdminCertificationRead:
     certification = db.query(Certification).filter(Certification.id == certification_id).first()
@@ -230,7 +233,7 @@ async def review_certification(
     _log_admin_action(
         db,
         action="certification.review",
-        admin_id=payload.admin_id,
+        admin_id=current_user.id,
         target_type="certification",
         target_id=certification.id,
         target=certification.certificate_type,
@@ -320,6 +323,7 @@ async def list_knowledge_items(
 @router.post("/knowledge-items", response_model=AdminKnowledgeRead, status_code=status.HTTP_201_CREATED)
 async def create_knowledge_item(
     payload: AdminKnowledgeCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> AdminKnowledgeRead:
     if payload.collection not in KNOWLEDGE_COLLECTIONS:
@@ -354,7 +358,7 @@ async def create_knowledge_item(
     _log_admin_action(
         db,
         action="knowledge.ingest_queued",
-        admin_id=payload.admin_id,
+        admin_id=current_user.id,
         target_type="ai_knowledge_chunk",
         target_id=item.id,
         target=payload.title,
@@ -365,7 +369,10 @@ async def create_knowledge_item(
     asyncio.create_task(
         _ingest_knowledge_background(
         item.id,
-        payload.model_dump(),
+        {
+            **payload.model_dump(),
+            "admin_id": current_user.id,
+        },
         category,
         subcategory,
         rag_doc_id,
@@ -462,7 +469,7 @@ def _mark_knowledge_ingest_failed(
 @router.delete("/knowledge-items/{item_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_knowledge_item(
     item_id: str,
-    admin_id: str | None = None,
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> None:
     item = db.query(AiKnowledgeChunk).filter(AiKnowledgeChunk.id == item_id).first()
@@ -479,7 +486,7 @@ async def delete_knowledge_item(
     _log_admin_action(
         db,
         action="knowledge.delete",
-        admin_id=admin_id,
+        admin_id=current_user.id,
         target_type="ai_knowledge_chunk",
         target_id=item.id,
         target=metadata.get("title", item.source_url),
@@ -497,6 +504,7 @@ async def list_ai_model_configs(db: Session = Depends(get_db)) -> list[AiModelCo
 @router.post("/ai-model-configs", response_model=AdminAiModelConfigRead, status_code=status.HTTP_201_CREATED)
 async def create_ai_model_config(
     payload: AdminAiModelConfigCreate,
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> AiModelConfig:
     if payload.is_active:
@@ -507,7 +515,7 @@ async def create_ai_model_config(
     _log_admin_action(
         db,
         action="ai_model_config.create",
-        admin_id=payload.admin_id,
+        admin_id=current_user.id,
         target_type="ai_model_config",
         target_id=config.id,
         target=config.model_name,
@@ -522,6 +530,7 @@ async def create_ai_model_config(
 async def update_ai_model_config(
     config_id: str,
     payload: AdminAiModelConfigUpdate,
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> AiModelConfig:
     config = db.query(AiModelConfig).filter(AiModelConfig.id == config_id).first()
@@ -535,7 +544,7 @@ async def update_ai_model_config(
     _log_admin_action(
         db,
         action="ai_model_config.update",
-        admin_id=payload.admin_id,
+        admin_id=current_user.id,
         target_type="ai_model_config",
         target_id=config.id,
         target=config.model_name,
@@ -549,7 +558,7 @@ async def update_ai_model_config(
 @router.post("/ai-model-configs/{config_id}/activate", response_model=AdminAiModelConfigRead)
 async def activate_ai_model_config(
     config_id: str,
-    admin_id: str | None = None,
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> AiModelConfig:
     config = db.query(AiModelConfig).filter(AiModelConfig.id == config_id).first()
@@ -560,7 +569,7 @@ async def activate_ai_model_config(
     _log_admin_action(
         db,
         action="ai_model_config.activate",
-        admin_id=admin_id,
+        admin_id=current_user.id,
         target_type="ai_model_config",
         target_id=config.id,
         target=config.model_name,
@@ -574,7 +583,7 @@ async def activate_ai_model_config(
 @router.delete("/ai-model-configs/{config_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_ai_model_config(
     config_id: str,
-    admin_id: str | None = None,
+    current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> None:
     config = db.query(AiModelConfig).filter(AiModelConfig.id == config_id).first()
@@ -585,7 +594,7 @@ async def delete_ai_model_config(
     _log_admin_action(
         db,
         action="ai_model_config.delete",
-        admin_id=admin_id,
+        admin_id=current_user.id,
         target_type="ai_model_config",
         target_id=config.id,
         target=config.model_name,

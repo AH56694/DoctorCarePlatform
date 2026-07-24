@@ -12,12 +12,17 @@ services:
   backend:
     build:
       context: .
-      dockerfile: backend/Dockerfile
+    dockerfile: backend/Dockerfile
     environment:
+      APP_ENV: ${APP_ENV:-development}
       PROJECT_NAME: ${PROJECT_NAME:-DoctorCarePlatform}
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-development-only-change-me}
+      AUTH_TOKEN_EXPIRE_MINUTES: ${AUTH_TOKEN_EXPIRE_MINUTES:-120}
+      AUTH_ISSUER: ${AUTH_ISSUER:-doctor-care-platform}
       DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://root:change-me@mysql:3306/doctor_care_platform?charset=utf8mb4}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       RAG_SERVICE_URL: ${RAG_SERVICE_URL:-http://python-service:8300}
+      RECRUITMENT_MODEL_PATH: ${RECRUITMENT_MODEL_PATH:-/app/.local-models/recruitment_recommender.pt}
       ALIYUN_SMS_ACCESS_KEY_ID: ${ALIYUN_SMS_ACCESS_KEY_ID:-}
       ALIYUN_SMS_ACCESS_KEY_SECRET: ${ALIYUN_SMS_ACCESS_KEY_SECRET:-}
       ALIYUN_SMS_SIGN_NAME: ${ALIYUN_SMS_SIGN_NAME:-}
@@ -33,6 +38,8 @@ services:
         condition: service_started
     ports:
       - "8000:8000"
+    volumes:
+      - ./.local-models:/app/.local-models:ro
 
   python-service:
     build:

@@ -12,6 +12,11 @@ class Settings(BaseSettings):
     database_url: str = "mysql+pymysql://root:change-me@127.0.0.1:3306/doctor_care_platform?charset=utf8mb4"
     redis_url: str = "redis://127.0.0.1:6379/0"
     rag_service_url: AnyHttpUrl | str = "http://127.0.0.1:8300"
+    auth_secret_key: str = "development-only-change-me"
+    auth_token_expire_minutes: int = Field(default=120, ge=5, le=1440)
+    auth_issuer: str = "doctor-care-platform"
+    recruitment_model_path: str = ".local-models/recruitment_recommender.pt"
+    recruitment_exploration_rate: float = Field(default=0.08, ge=0, le=0.3)
 
     aliyun_sms_access_key_id: str = ""
     aliyun_sms_access_key_secret: str = ""
