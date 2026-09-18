@@ -38,7 +38,7 @@ jobs:
             tests: python-service/tests
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
           cache: pip
@@ -99,7 +99,7 @@ jobs:
       TEST_MYSQL_URL: mysql+pymysql://root:ci-only-password@127.0.0.1:3306/doctorcare_ci
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.11'
           cache: pip
