@@ -88,6 +88,12 @@ class ConfigManager:  # 定义配置管理器类，类似 Java 中的 class，�
         self.RAG_USE_RERANK = os.getenv("RAG_USE_RERANK", "true").lower() == "true"
         self.RAG_MIN_SOURCE_COUNT = int(os.getenv("RAG_MIN_SOURCE_COUNT", "1"))
 
+        self.AGENT_MAX_SEARCHES = max(1, min(5, int(os.getenv("AGENT_MAX_SEARCHES", "3"))))
+        self.AGENT_MAX_DECISIONS = max(1, min(12, int(os.getenv("AGENT_MAX_DECISIONS", "6"))))
+        self.AGENT_MAX_STEPS = max(4, min(40, int(os.getenv("AGENT_MAX_STEPS", "24"))))
+        self.AGENT_TIMEOUT_SECONDS = max(1, min(85, float(os.getenv("AGENT_TIMEOUT_SECONDS", "80"))))
+        self.AGENT_STEP_TIMEOUT_SECONDS = max(1, min(45, float(os.getenv("AGENT_STEP_TIMEOUT_SECONDS", "20"))))
+
         # Rerank Configuration
         self.RERANKER_TYPE = os.getenv("RERANKER_TYPE", "simple")  # 重排序器类型，可选 "simple"、"bge"、"cohere"，默认 simple
         self.COHERE_API_KEY = os.getenv("COHERE_API_KEY", "")  # Cohere API 密钥（用于 Cohere 重排序服务），默认为空

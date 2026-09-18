@@ -2,6 +2,9 @@
 
 这是一个基于 FastAPI 和 LangChain 的 AI 服务，负责文档解析、向量存储和问答。
 
+普通用户问诊已接入受限 Agent Loop，支持根据检索结果重新决策、补充检索、追问和回答依据校验。
+配置、停止条件、接口兼容说明与测试方式见 [Agent Loop 说明](docs/agent-loop.md)。
+
 ## 目录结构
 
 *   `main.py`: 服务入口

@@ -1,3 +1,4 @@
+from starlette.concurrency import run_in_threadpool
 from fastapi import APIRouter, HTTPException  # 导入 FastAPI 路由器和 HTTP 异常类
 from fastapi.responses import StreamingResponse  # 导入流式响应类，用于 SSE（Server-Sent Events）
 from pydantic import BaseModel  # 导入 Pydantic 基础模型类，用于请求/响应数据校验（类似 Java 的 DTO + @Valid）
@@ -135,6 +136,8 @@ event_bus.subscribe(EventType.RUN_FAILED, on_run_failed)  # 订阅运行失败�
 
 def _derive_task_type(state: Optional[AgentState]) -> str:  # 从 AgentState 推导任务类型
     """从 AgentState 的 planned_steps 推导任务类型"""
+    if state and state.task_type != "unknown":
+        return state.task_type
     if not state or not state.planned_steps:  # 如果状态为空或没有计划步骤
         return "unknown"  # 返回未知类型
 
@@ -221,18 +224,14 @@ def _cleanup_old_states():  # 清理过多的状态记录，防止内存泄漏
     if len(stored_states) <= MAX_STORED_STATES:  # 未超过上限
         return  # 无需清理
 
-    # 按开始时间排序，找到最旧的记录
-    sorted_keys = sorted(  # sorted() 排序函数，类似 Java 的 Stream.sorted()
-        stored_states.keys(),  # 所有 run_id
-        key=lambda k: stored_states[k].start_time or 0  # 排序键为开始时间，lambda 是匿名函数
-    )
-    # 保留最新的 80%
-    keep_count = int(MAX_STORED_STATES * 0.8)  # 计算保留数量
-    remove_count = len(sorted_keys) - keep_count  # 计算需要删除的数量
-    for key in sorted_keys[:remove_count]:  # 遍历最旧的记录
-        del stored_states[key]  # 从 stored_states 中删除
-        orchestrator.clear_state(key)  # 从 Orchestrator 内部也清理
-    logger.info(f"[Agent API] Cleaned up {remove_count} old states")  # 记录清理日志
+    snapshot = dict(stored_states)
+    finished = [key for key, state in snapshot.items() if state.status != AgentStatus.RUNNING]
+    finished.sort(key=lambda key: snapshot[key].start_time or 0)
+    remove_count = max(0, len(snapshot) - int(MAX_STORED_STATES * 0.8))
+    for key in finished[:remove_count]:
+        stored_states.pop(key, None)
+        orchestrator.clear_state(key)
+
 
 
 # ==================== API 接口 ====================
@@ -253,12 +252,11 @@ async def run_agent(request: AgentRunRequest):
     start_time = time.time()  # 记录请求开始时间
 
     try:
-        logger.info(f"[Agent API] Received run request: {request.input[:50]}..., "
-                     f"is_admin={request.is_admin}, run_id={run_id}")
+        logger.info("AI request processing; content omitted")
 
         if request.is_admin:
             # === 管理员请求：走 RouterAgent（Orchestrator 的 admin 路径尚不完整） ===
-            result = router_agent.route(  # 调用路由 Agent
+            result = await run_in_threadpool(router_agent.route,
                 input_text=request.input,
                 conversation_id=request.conversation_id,
                 user_id=request.user_id,
@@ -287,7 +285,7 @@ async def run_agent(request: AgentRunRequest):
             stored_states[run_id] = state  # 存入状态字典
         else:
             # === 普通请求：走 Orchestrator 编排执行 ===
-            result = orchestrator.run(  # 调用 Orchestrator 同步执行
+            result = await run_in_threadpool(orchestrator.run,
                 input_text=request.input,
                 conversation_id=request.conversation_id,
                 user_id=request.user_id,
@@ -306,7 +304,7 @@ async def run_agent(request: AgentRunRequest):
 
         # 更新任务统计
         task_stats[task_type]["total"] += 1  # 总数 +1
-        task_stats[task_type]["success"] += 1  # 成功数 +1
+        task_stats[task_type]["failed" if state and state.status == AgentStatus.FAILED else "success"] += 1
         duration_ms = (time.time() - start_time) * 1000  # 计算耗时（毫秒）
         task_stats[task_type]["total_duration_ms"] += duration_ms  # 累加总耗时
 
@@ -314,13 +312,16 @@ async def run_agent(request: AgentRunRequest):
         response = {  # 构建完整响应字典
             "run_id": run_id,  # 运行 ID
             "trace_id": trace_id,  # 追踪 ID
-            "status": "completed",  # 执行状态
+            "status": state.status.value if state else "failed",
             "answer": result.get("answer", ""),  # 回答内容
             "sources": result.get("sources", []),  # 文档来源列表
             "task_type": task_type,  # 任务类型
             "steps": _extract_steps(state),  # 执行步骤详情
             "tool_calls": _extract_tool_calls(run_id, state),  # 工具调用记录
-            "intermediate_conclusions": _extract_conclusions(state)  # 中间结论
+            "intermediate_conclusions": _extract_conclusions(state),
+            "requires_input": bool(result.get("requires_input")),
+            "stop_reason": result.get("stop_reason"),
+            "error": bool(result.get("error")),
         }
 
         _cleanup_old_states()  # 清理旧状态，防止内存泄漏
@@ -364,13 +365,12 @@ async def run_agent_stream(request: AgentRunRequest):
     run_id = request.run_id or str(uuid.uuid4())  # 获取或生成运行 ID
     trace_id = request.trace_id or str(uuid.uuid4())  # 获取或生成追踪 ID
 
-    async def event_generator():  # 异步生成器函数，逐步产出 SSE 事件
+    def event_generator():  # StreamingResponse runs synchronous work off the event loop.
         start_time = time.time()  # 记录开始时间
         task_type = "unknown"  # 初始化任务类型
 
         try:
-            logger.info(f"[Agent API] Stream request: {request.input[:50]}..., "
-                         f"is_admin={request.is_admin}, run_id={run_id}")
+            logger.info("AI request processing; content omitted")
 
             if request.is_admin:
                 # === 管理员请求流式：走 RouterAgent ===
@@ -416,7 +416,8 @@ async def run_agent_stream(request: AgentRunRequest):
             # 更新统计
             duration_ms = (time.time() - start_time) * 1000  # 计算耗时
             task_stats[task_type]["total"] += 1  # 总数 +1
-            task_stats[task_type]["success"] += 1  # 成功数 +1
+            final_state = orchestrator.get_state(run_id) if not request.is_admin else None
+            task_stats[task_type]["failed" if final_state and final_state.status == AgentStatus.FAILED else "success"] += 1
             task_stats[task_type]["total_duration_ms"] += duration_ms  # 累加耗时
 
             yield f"data: {json.dumps({'type': 'complete', 'run_id': run_id})}\n\n"  # 发送完成事件
@@ -462,7 +463,10 @@ async def get_run_status(run_id: str):
     return {  # 返回完整运行状态
         "run_id": state.run_id,  # 运行 ID
         "trace_id": state.trace_id,  # 追踪 ID
-        "status": state.status.value,  # 状态值（枚举转字符串）
+        "status": state.status.value,
+        "task_type": state.task_type,
+        "stop_reason": state.stop_reason,
+        "requires_input": bool((state.final_output or {}).get("requires_input")),
         "goal": state.goal,  # 执行目标
         "original_input": state.original_input,  # 原始输入
         "current_step_index": state.current_step_index,  # 当前步骤索引

@@ -124,6 +124,14 @@ class AgentState:  # 定义 Agent 状态数据类，保存 Agent 执行过程中
     original_input: Optional[str] = None  # 用户的原始输入文本
     context: str = ""  # 上下文信息，如对话历史等
 
+    patient: Dict[str, Any] = field(default_factory=dict)
+    evidence: Dict[str, Any] = field(default_factory=dict)
+    searched_queries: List[str] = field(default_factory=list)
+    decision_count: int = 0
+    task_type: str = "unknown"
+    stop_reason: Optional[str] = None
+    pending_answer: Optional[Dict[str, Any]] = field(default=None, repr=False)
+
     # 步骤管理
     current_step_index: int = 0  # 当前执行的步骤索引，类似 Java 数组的下标
     steps: List[AgentStep] = field(default_factory=list)  # 已执行的步骤列表
@@ -161,7 +169,7 @@ class AgentState:  # 定义 Agent 状态数据类，保存 Agent 执行过程中
     def elapsed_time(self) -> float:  # 定义获取已执行时间的属性，单位为秒
         """获取已执行时间（秒）"""  # 方法文档字符串
         if self.start_time:  # 如果已经开始计时
-            return time.time() - self.start_time  # 返回从开始到现在的经过时间
+            return (self.end_time or time.time()) - self.start_time
         return 0.0  # 尚未开始则返回 0.0
 
     @property  # @property 装饰器
@@ -182,7 +190,8 @@ class AgentState:  # 定义 Agent 状态数据类，保存 Agent 执行过程中
             step_name=step_name,  # 设置步骤名称
             input_data=input_data or {}  # 如果 input_data 为 None 则使用空字典，Python 的 or 短路特性
         )
-        self.steps.append(step)  # 将步骤添加到步骤列表末尾
+        self.steps.append(step)
+        self.current_step_index = len(self.steps) - 1
         return step  # 返回新创建的步骤对象
 
     def advance_step(self) -> bool:  # 推进步骤索引到下一步
@@ -256,6 +265,12 @@ class AgentState:  # 定义 Agent 状态数据类，保存 Agent 执行过程中
             "goal": self.goal,  # 执行目标
             "original_input": self.original_input,  # 原始输入
             "context": self.context,  # 上下文
+            "patient": self.patient,
+            "evidence": self.evidence,
+            "searched_queries": self.searched_queries,
+            "decision_count": self.decision_count,
+            "task_type": self.task_type,
+            "stop_reason": self.stop_reason,
             "current_step_index": self.current_step_index,  # 当前步骤索引
             "steps": [  # 步骤列表，使用列表推导式（类似 Java Stream 的 map）将每个步骤转为字典
                 {

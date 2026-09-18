@@ -673,7 +673,7 @@ class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
         try:
             # 使用简单的 prompt
             simple_prompt = PromptTemplate.from_template("{input}")  # 创建简单的 Prompt 模板，只有一个 {input} 占位符
-            chain = simple_prompt | self.llm | StrOutputParser()  # 构建链式处理
+            chain = simple_prompt | self.llm.bind(temperature=temperature, max_tokens=max_tokens) | StrOutputParser()
 
             result = chain.invoke({"input": prompt})  # 调用链式处理
 
@@ -688,6 +688,31 @@ class LLMService:  # 定义 LLM 服务类，封装大语言模型的调用逻辑
 
     def chat(self, prompt: str, temperature: float = 0.3, max_tokens: int = 600) -> str:
         return self.generate(prompt, temperature=temperature, max_tokens=max_tokens)
+
+    def generate_structured(self, prompt: str, schema):
+        """Validate JSON from the same provider chain used for answer generation.
+
+        Invalid output fails closed; prose fallbacks never become tool decisions.
+        """
+        instructions = (
+            prompt + "\n只返回符合以下 JSON Schema 的 JSON 对象，不要解释或添加字段：\n"
+            + json.dumps(schema.model_json_schema(), ensure_ascii=False)
+        )
+        if len(instructions) > config.LLM_PROMPT_MAX_CHARS:
+            config.logger.warning("Structured prompt exceeds configured character budget")
+            return None
+        text = self.generate(instructions, temperature=0.0, max_tokens=1600).strip()
+        if text.startswith("```json\n") and text.endswith("```"):
+            text = text[8:-3].strip()
+        elif text.startswith("```\n") and text.endswith("```"):
+            text = text[4:-3].strip()
+        try:
+            if len(text) > 24000:
+                return None
+            return schema.model_validate(json.loads(text))
+        except (ValueError, TypeError):
+            config.logger.warning("Structured model output failed validation; content omitted")
+            return None
 
 
 # 创建单例实例

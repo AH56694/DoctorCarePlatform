@@ -134,14 +134,14 @@ class TestRetrievalSufficiency:
         result = planner.evaluate_retrieval_sufficiency(chunks, "test question", scores)
         assert result.is_sufficient is False
 
-    def test_unknown_score_is_not_replaced_with_false_low_score(self, planner):
+    def test_unknown_score_requires_semantic_verification(self, planner):
         result = planner.evaluate_retrieval_sufficiency(
             [{"content": "可靠的单一指南片段"}],
             "需要观察什么？",
             [None],
         )
 
-        assert result.is_sufficient is True
+        assert result.is_sufficient is False
 
 
 class TestStepPlanning:

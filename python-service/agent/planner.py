@@ -209,44 +209,36 @@ class Planner:  # 任务规划器类，负责分析任务、规划执行步骤�
             confidence=0.6  # 置信度较低
         )
 
-    def evaluate_retrieval_sufficiency(self, chunks: List[Any], question: str, scores: List[float] = None) -> SufficiencyResult:  # 评估检索结果的充分性
-        """评估检索结果充分性"""  # 方法文档字符串
-        if not chunks:  # 如果没有检索到任何文档
-            return SufficiencyResult(  # 返回不充分的结果
-                is_sufficient=False,  # 不充分
-                confidence=1.0,  # 置信度 1.0（很确定没有结果）
-                reasoning="未检索到任何相关文档",  # 原因说明
-                missing_aspects=["相关知识文档"],  # 缺少的方面
-                suggestions=["建议补充相关知识文档", "尝试使用不同的关键词检索"]  # 改进建议
-            )
+    def evaluate_retrieval_sufficiency(self, chunks, question, scores=None) -> SufficiencyResult:
+        """Preliminary relevance gate; the loop separately validates semantic evidence.
 
-        valid_scores = [float(score) for score in (scores or []) if isinstance(score, (int, float))]
-        low_score_count = sum(1 for score in valid_scores if score < config.RAG_SIMILARITY_THRESHOLD)
-        if valid_scores and low_score_count > len(valid_scores) * 0.5:  # 如果超过一半的结果都是低分
-            return SufficiencyResult(  # 返回不充分的结果
-                is_sufficient=False,  # 不充分
-                confidence=0.8,  # 置信度 0.8
-                reasoning=f"大部分检索结果相似度较低（{low_score_count}/{len(valid_scores)}低于阈值）",  # f-string 格式化原因
-                missing_aspects=["高质量检索结果"],  # 缺少的方面
-                suggestions=["优化检索query", "增加同义词扩展"]  # 改进建议
-            )
+        A similarity score alone is not evidence of coverage. Unknown scores are
+        kept unknown and require the semantic evaluator to establish sufficiency.
+        """
+        import math
+        import re
 
-        coverage = min(1.0, len(chunks) * 0.5)  # 单个高质量片段即可达到最低覆盖要求
-        if coverage < 0.5:  # 如果覆盖度低于 0.5
-            return SufficiencyResult(  # 返回不充分的结果
-                is_sufficient=False,  # 不充分
-                confidence=0.7,  # 置信度 0.7
-                reasoning=f"检索结果覆盖度较低（{coverage:.2f}）",  # :.2f 格式化为保留2位小数的浮点数
-                missing_aspects=["相关文档数量"],  # 缺少的方面
-                suggestions=["增加知识库内容", "调整相似度阈值"]  # 改进建议
-            )
+        def terms(text):
+            words = set(re.findall(r"[a-zA-Z]{2,}", text.lower()))
+            for phrase in re.findall(r"[\u4e00-\u9fff]+", text):
+                words.update(phrase[i:i + 2] for i in range(len(phrase) - 1))
+            return words - {"什么", "怎么", "如何", "需要", "可以", "应该", "是否", "患者"}
 
-        return SufficiencyResult(  # 通过所有检查，返回充分的结果
-            is_sufficient=True,  # 充分
-            confidence=0.85,  # 置信度 0.85
-            reasoning=f"检索到{len(chunks)}个相关结果，置信度良好",  # 原因说明
-            missing_aspects=[],  # 没有缺失
-            suggestions=[]  # 没有建议
+        query_terms = terms(question)
+        supported = 0
+        for index, chunk in enumerate(chunks):
+            content = (chunk.get("content") or chunk.get("page_content") or "") if isinstance(chunk, dict) else getattr(chunk, "page_content", "")
+            score = (scores or [])[index] if index < len(scores or []) else None
+            if (isinstance(score, (int, float)) and not isinstance(score, bool)
+                    and math.isfinite(score) and score >= config.RAG_SIMILARITY_THRESHOLD
+                    and query_terms.intersection(terms(str(content)))):
+                supported += 1
+        sufficient = supported > 0
+        return SufficiencyResult(
+            is_sufficient=sufficient, confidence=0.0,
+            reasoning="通过初步相关性检查，仍需验证语义证据" if sufficient else "缺少有分数且与问题相关的证据",
+            missing_aspects=[] if sufficient else ["可验证的相关证据"],
+            suggestions=[] if sufficient else ["围绕缺失信息重新检索"],
         )
 
     def plan_steps(self, state: AgentState) -> List[str]:  # 根据意图规划执行步骤

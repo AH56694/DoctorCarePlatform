@@ -149,12 +149,12 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
         query = state.original_input or ""  # 获取原始输入作为检索查询
 
         rewritten_question = None  # 初始化改写后的问题为 None
-        for conclusion in state.intermediate_conclusions:  # 遍历中间结论
+        for conclusion in reversed(state.intermediate_conclusions):
             if conclusion.conclusion_type == "rewritten_question":  # 找到改写问题的结论
                 rewritten_question = conclusion.content  # 获取改写后的问题
                 break  # 找到后跳出循环
 
-        search_query = rewritten_question if rewritten_question else query  # 优先使用改写后的问题，如果没有则使用原始问题
+        search_query = step.input_data.get("query") or rewritten_question or query
 
         tool_call_id = None  # 初始化工具调用 ID
         if tool_registry.has_tool("knowledge_search"):  # 如果知识检索工具已注册
@@ -235,7 +235,7 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
     def _execute_result_evaluation(self, state: AgentState, step: AgentStep) -> Dict[str, Any]:  # 执行结果充分性判断
         """执行结果充分性判断"""  # 方法文档字符串
         chunks = None  # 初始化检索结果为 None
-        for s in state.steps:  # 遍历所有步骤
+        for s in reversed(state.steps):
             if s.step_type == StepType.KNOWLEDGE_SEARCH and s.output_data:  # 找到知识检索步骤且有输出
                 chunks = s.output_data.get("chunks", [])  # 获取检索到的片段
                 break  # 找到后跳出循环
@@ -248,7 +248,7 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
             return step.output_data  # 返回输出数据
 
         search_scores = []
-        for search_step in state.steps:
+        for search_step in reversed(state.steps):
             if search_step.step_type == StepType.KNOWLEDGE_SEARCH and search_step.output_data:
                 search_scores = search_step.output_data.get("scores", [])
                 break
@@ -297,7 +297,7 @@ class Executor:  # 步骤执行器类，负责执行各个步骤
         sources = []  # 初始化来源列表
         retrieval_sufficient = True
         saw_knowledge_search = False
-        for s in state.steps:  # 遍历所有步骤
+        for s in reversed(state.steps):
             if s.step_type == StepType.KNOWLEDGE_SEARCH and s.output_data:  # 找到知识检索步骤
                 saw_knowledge_search = True
                 chunks = s.output_data.get("chunks", [])  # 获取片段

@@ -1,349 +1,396 @@
-from typing import Dict, Any, Optional, Generator, Callable  # 导入类型注解：Dict（字典类型）、Any（任意类型）、Optional（可选类型）、Generator（生成器类型，用于 yield 关键字）、Callable（可调用对象类型）
-from agent.state import AgentState, AgentStatus, StepType, TerminationCondition  # 从 agent.state 导入状态相关类
-from agent.planner import Planner  # 从规划器模块导入 Planner
-from intent.classifier import IntentType  # 从意图分类器导入意图类型枚举
-from agent.executor import Executor  # 从执行器模块导入 Executor
-from agent.events import EventBus, Event, RunStartedEvent, RunCompletedEvent, RunFailedEvent, StepStartedEvent, StepCompletedEvent, StepFailedEvent  # 从事件模块导入事件相关类
-from agent.policies import policies  # 从策略模块导入策略管理器单例
-import time  # 导入 time 模块
-import logging  # 导入 logging 模块
-import uuid  # 导入 uuid 模块
-import json  # 导入 json 模块
+"""A bounded observe/decide/act loop shared by synchronous and SSE requests."""
 
-logger = logging.getLogger(__name__)  # 获取当前模块的日志记录器
+import json
+import logging
+import re
+import time
+import uuid
+from copy import deepcopy
+
+from core.call_budget import call_with_timeout
+from core.config import config
+from core.medical import urgent_signals
+
+from agent.consultation import ESCALATION, INSUFFICIENT, AnswerDraft, ConsultationPlanner
+from agent.events import (
+    EventBus,
+    RunCompletedEvent,
+    RunFailedEvent,
+    RunStartedEvent,
+    StepCompletedEvent,
+    StepFailedEvent,
+    StepStartedEvent,
+)
+from agent.executor import Executor
+from agent.planner import Planner
+from agent.policies import policies
+from agent.state import AgentState, AgentStatus, StepType
+
+logger = logging.getLogger(__name__)
 
 
-class Orchestrator:  # Agent 编排器类，负责协调规划和执行，管理整个 Agent 运行流程
-    """Agent编排器 - 负责协调整个Agent执行流程"""  # 类的文档字符串
+class Orchestrator:
+    def __init__(self):
+        self.planner = Planner()
+        self.executor = Executor()
+        self.consultation = ConsultationPlanner(self.executor.llm_service)
+        self.event_bus = EventBus()
+        self.policies = policies
+        self._states = {}
 
-    def __init__(self):  # 构造函数
-        self.planner = Planner()  # 创建规划器实例
-        self.executor = Executor()  # 创建执行器实例
-        self.event_bus = EventBus()  # 创建事件总线实例（单例）
-        self.policies = policies  # 引用全局策略管理器
-        self._states: Dict[str, AgentState] = {}  # 状态存储字典，key 为 run_id，value 为 AgentState（类似 Java 的 ConcurrentHashMap）
-
-    def create_state(self, input_text: str, conversation_id: Optional[str] = None,  # 创建 Agent 状态对象
-                    user_id: Optional[str] = None, goal: Optional[str] = None,  # 参数：输入文本、会话ID、用户ID、目标
-                    run_id: Optional[str] = None, trace_id: Optional[str] = None) -> AgentState:  # 运行ID、追踪ID
-        """创建Agent状态"""  # 方法文档字符串
-        state = AgentState(  # 创建 AgentState 实例
-            run_id=run_id or str(uuid.uuid4()),  # 如果未提供运行 ID 则生成 UUID，or 短路特性
-            trace_id=trace_id or str(uuid.uuid4()),  # 如果未提供追踪 ID 则生成 UUID
-            conversation_id=conversation_id,  # 会话 ID
-            user_id=user_id,  # 用户 ID
-            goal=goal or f"回答用户问题: {input_text[:50]}...",  # 如果未提供目标则自动生成，input_text[:50] 取前50个字符
-            original_input=input_text,  # 保存原始输入
-            status=AgentStatus.PENDING  # 初始状态为待执行
+    def create_state(
+        self, input_text, conversation_id=None, user_id=None, goal=None, run_id=None, trace_id=None
+    ):
+        return AgentState(
+            run_id=run_id or str(uuid.uuid4()),
+            trace_id=trace_id or str(uuid.uuid4()),
+            conversation_id=conversation_id,
+            user_id=user_id,
+            goal=goal or "回答用户问诊问题",
+            original_input=input_text,
+            max_steps=config.AGENT_MAX_STEPS,
+            timeout_seconds=config.AGENT_TIMEOUT_SECONDS,
         )
-        return state  # 返回状态对象
 
-    def run(self, input_text: str, conversation_id: Optional[str] = None,  # 同步执行 Agent 的入口方法
-            user_id: Optional[str] = None, context: str = "",  # 参数：输入文本、会话ID、用户ID、上下文
-            goal: Optional[str] = None, run_id: Optional[str] = None,  # 目标、运行ID
-            trace_id: Optional[str] = None, **kwargs) -> Dict[str, Any]:  # **kwargs 接收额外的关键字参数，返回结果字典
-        """同步执行Agent"""  # 方法文档字符串
-        state = self.create_state(input_text, conversation_id, user_id, goal, run_id, trace_id)  # 创建状态对象
-        state.context = context  # 设置上下文
-        self._states[state.run_id] = state  # 存储状态到内部字典，供 get_state() 查询（类似 Java 的 cache.put(key, value)）
+    def _prepare(self, input_text, conversation_id, user_id, context, goal, run_id, trace_id):
+        state = self.create_state(input_text, conversation_id, user_id, goal, run_id, trace_id)
+        state.context = context or ""
+        self._states[state.run_id] = state
+        return state
 
-        is_valid, error_msg = self.policies.validate_input(input_text)  # 验证输入安全性，元组解构赋值
-        if not is_valid:  # 如果输入不合法
-            state.fail(error_msg or "输入验证失败", "INPUT_VALIDATION_ERROR")  # 标记失败
-            return self._build_error_response(state)  # 返回错误响应
+    def run(
+        self,
+        input_text,
+        conversation_id=None,
+        user_id=None,
+        context="",
+        goal=None,
+        run_id=None,
+        trace_id=None,
+        **kwargs,
+    ):
+        state = self._prepare(input_text, conversation_id, user_id, context, goal, run_id, trace_id)
+        for _ in self._events(state):
+            pass
+        return state.final_output or self._build_error_response(state)
 
-        state.start()  # 开始执行，状态变为 RUNNING
-        self.event_bus.publish(RunStartedEvent(  # 发布运行开始事件
-            run_id=state.run_id,  # 运行 ID
-            goal=state.goal,  # 目标
-            input_data=input_text  # 输入数据
-        ))
-
-        try:  # try-except 包裹整个执行流程
-            planned_steps = self.planner.plan_steps(state)  # 规划执行步骤
-            state.planned_steps = planned_steps  # 保存计划步骤到状态
-
-            for step_name in planned_steps:  # 按顺序执行每个步骤
-                step_type = self._get_step_type(step_name)  # 获取步骤类型
-                step = state.add_step(step_type, step_name, {"input": input_text})  # 添加步骤到状态
-
-                self.event_bus.publish(StepStartedEvent(  # 发布步骤开始事件
-                    run_id=state.run_id,  # 运行 ID
-                    step_id=step.step_id,  # 步骤 ID
-                    step_name=step_name,  # 步骤名称
-                    step_type=step_type.value  # 步骤类型的字符串值
-                ))
-
-                retry_count = 0  # 重试计数器
-                step_done = False  # 步骤是否完成标志
-
-                while not step_done:  # 循环直到步骤完成
-                    try:  # try-except 处理步骤执行异常
-                        self.executor.execute_step(state, step)  # 执行步骤
-
-                        self.event_bus.publish(StepCompletedEvent(  # 发布步骤完成事件
-                            run_id=state.run_id,  # 运行 ID
-                            step_id=step.step_id,  # 步骤 ID
-                            step_name=step_name,  # 步骤名称
-                            step_type=step_type.value,  # 步骤类型
-                            output=step.output_data,  # 步骤输出数据
-                            duration_ms=step.duration_ms or 0  # 步骤耗时（毫秒）
-                        ))
-
-                        step_done = True  # 标记步骤完成
-
-                        if state.status == AgentStatus.WAITING:  # 如果 Agent 进入等待状态（需要澄清）
-                            clarification_output = self._handle_clarification(state)  # 处理澄清请求
-                            state.complete(clarification_output)  # 完成执行
-                            break  # 跳出循环
-
-                    except Exception as e:  # 步骤执行失败
-                        logger.error(f"[{state.run_id}] Step {step_name} failed (attempt {retry_count + 1}): {str(e)}")  # 记录错误
-                        self.event_bus.publish(StepFailedEvent(  # 发布步骤失败事件
-                            run_id=state.run_id,  # 运行 ID
-                            step_id=step.step_id,  # 步骤 ID
-                            step_name=step_name,  # 步骤名称
-                            step_type=step_type.value,  # 步骤类型
-                            error=str(e)  # 错误信息
-                        ))
-
-                        if self.policies.should_retry(retry_count, e):  # 根据策略判断是否应该重试
-                            retry_count += 1  # 增加重试计数
-                        else:  # 不再重试
-                            state.fail(str(e), "STEP_EXECUTION_ERROR")  # 标记失败
-                            step_done = True  # 标记步骤完成（失败）
-                            break  # 跳出循环
-
-                should_terminate, reason = self.planner.should_terminate(state)  # 检查是否应该终止
-                if should_terminate:  # 如果应该终止
-                    logger.info(f"[{state.run_id}] Terminating: {reason}")  # 记录终止原因
-                    if state.status == AgentStatus.PENDING:  # 如果还在待执行状态
-                        state.complete(self._build_success_response(state))  # 构建响应并完成
-                    break  # 跳出循环
-
-            if state.status == AgentStatus.RUNNING:  # 如果所有步骤执行完但状态还是 RUNNING
-                state.complete(self._build_success_response(state))  # 构建响应并完成
-
-        except Exception as e:  # 捕获编排器级别的异常
-            logger.error(f"[{state.run_id}] Orchestrator run failed: {str(e)}")  # 记录错误
-            state.fail(str(e), "ORCHESTRATOR_ERROR")  # 标记失败
-            self.event_bus.publish(RunFailedEvent(  # 发布运行失败事件
-                run_id=state.run_id,  # 运行 ID
-                error=str(e),  # 错误信息
-                error_code="ORCHESTRATOR_ERROR"  # 错误码
-            ))
-            return self._build_error_response(state)  # 返回错误响应
-
-        if state.status == AgentStatus.COMPLETED:  # 如果执行成功完成
-            self.event_bus.publish(RunCompletedEvent(  # 发布运行完成事件
-                run_id=state.run_id,  # 运行 ID
-                output=state.final_output  # 最终输出
-            ))
-        elif state.status == AgentStatus.FAILED:  # 如果执行失败
-            self.event_bus.publish(RunFailedEvent(  # 发布运行失败事件
-                run_id=state.run_id,  # 运行 ID
-                error=state.error_message,  # 错误信息
-                error_code=state.error_code  # 错误码
-            ))
-
-        return state.final_output if state.final_output else self._build_error_response(state)  # 返回最终输出，如果为空则返回错误响应
-
-    def run_stream(self, input_text: str, conversation_id: Optional[str] = None,  # 流式执行 Agent，使用 yield 返回生成器
-                  user_id: Optional[str] = None, context: str = "",  # 参数同 run 方法
-                  goal: Optional[str] = None, run_id: Optional[str] = None,
-                  trace_id: Optional[str] = None, **kwargs) -> Generator[str, None, None]:  # Generator[YieldType, SendType, ReturnType] 生成器类型注解
-        """流式执行Agent"""  # 方法文档字符串
-        state = self.create_state(input_text, conversation_id, user_id, goal, run_id, trace_id)  # 创建状态
-        state.context = context  # 设置上下文
-        self._states[state.run_id] = state  # 存储状态到内部字典，流式执行期间也可查询实时状态
-
-        is_valid, error_msg = self.policies.validate_input(input_text)  # 验证输入
-        if not is_valid:  # 如果输入不合法
-            state.fail(error_msg or "输入验证失败", "INPUT_VALIDATION_ERROR")  # 标记失败
-            yield json.dumps({  # yield 关键字：暂停函数执行并返回一个值，下次调用时从暂停处继续。类似 Java 的 Stream 惰性求值
-                "type": "error",  # 消息类型为错误
-                "content": error_msg  # 错误内容
-            })
-            return  # 提前结束生成器
-
-        state.start()  # 开始执行
-        self.event_bus.publish(RunStartedEvent(  # 发布开始事件
-            run_id=state.run_id,  # 运行 ID
-            goal=state.goal,  # 目标
-            input_data=input_text  # 输入
-        ))
-
-        try:  # try-except 包裹执行流程
-            planned_steps = self.planner.plan_steps(state)  # 规划步骤
-            state.planned_steps = planned_steps  # 保存计划
-
-            for step_name in planned_steps:  # 遍历每个步骤
-                step_type = self._get_step_type(step_name)  # 获取步骤类型
-                step = state.add_step(step_type, step_name, {"input": input_text})  # 添加步骤
-
-                yield json.dumps({  # yield 返回步骤开始消息
-                    "type": "step_started",  # 消息类型
-                    "step_name": step_name,  # 步骤名称
-                    "step_type": step_type.value  # 步骤类型值
-                })
-
-                try:  # try-except 处理步骤异常
-                    self.executor.execute_step(state, step)  # 执行步骤
-
-                    yield json.dumps({  # yield 返回步骤完成消息
-                        "type": "step_completed",  # 消息类型
-                        "step_name": step_name,  # 步骤名称
-                        "output": step.output_data  # 输出数据
-                    })
-
-                    if state.status == AgentStatus.WAITING:  # 如果需要澄清
-                        clarification_output = self._handle_clarification(state)  # 处理澄清
-                        state.complete(clarification_output)  # 完成
-                        yield json.dumps({  # yield 返回澄清消息
-                            "type": "clarification",  # 消息类型
-                            "content": clarification_output  # 澄清内容
-                        })
-                        break  # 跳出循环
-
-                    if step_type == StepType.ANSWER_GENERATION:  # 如果是答案生成步骤
-                        answer = step.output_data.get("answer", "")  # 获取答案
-                        sources = step.output_data.get("sources", [])  # 获取来源
-
-                        yield json.dumps({  # yield 返回来源信息
-                            "type": "sources",  # 消息类型
-                            "content": sources  # 来源列表
-                        })
-
-                        for char in answer:  # 逐字符遍历答案
-                            yield json.dumps({  # yield 逐个返回字符，实现打字机效果
-                                "type": "token",  # 消息类型为 token
-                                "content": char  # 单个字符
-                            })
-
-                        yield json.dumps({  # yield 返回结束消息
-                            "type": "end",  # 消息类型为结束
-                            "content": {  # 包含完整答案和来源
-                                "answer": answer,  # 完整答案
-                                "sources": sources  # 来源列表
-                            }
-                        })
-
-                except Exception as e:  # 步骤执行失败
-                    logger.error(f"[{state.run_id}] Step {step_name} failed: {str(e)}")  # 记录错误
-                    yield json.dumps({  # yield 返回步骤失败消息
-                        "type": "step_failed",  # 消息类型
-                        "step_name": step_name,  # 步骤名称
-                        "error": str(e)  # 错误信息
-                    })
-                    state.fail(str(e), "STEP_EXECUTION_ERROR")  # 标记失败
-                    break  # 跳出循环
-
-                should_terminate, reason = self.planner.should_terminate(state)  # 检查终止条件
-                if should_terminate:  # 如果应该终止
-                    break  # 跳出循环
-
+    def run_stream(
+        self,
+        input_text,
+        conversation_id=None,
+        user_id=None,
+        context="",
+        goal=None,
+        run_id=None,
+        trace_id=None,
+        **kwargs,
+    ):
+        state = self._prepare(input_text, conversation_id, user_id, context, goal, run_id, trace_id)
+        try:
+            for event in self._events(state):
+                yield json.dumps(event, ensure_ascii=False)
+        finally:
             if state.status == AgentStatus.RUNNING:
-                state.complete(self._build_success_response(state))
+                state.interrupt()
 
-        except Exception as e:  # 编排器级别异常
-            logger.error(f"[{state.run_id}] Orchestrator stream run failed: {str(e)}")  # 记录错误
-            yield json.dumps({  # yield 返回错误消息
-                "type": "error",  # 消息类型
-                "content": str(e)  # 错误信息
-            })
-            state.fail(str(e), "ORCHESTRATOR_ERROR")  # 标记失败
+    def _events(self, state):
+        valid, error = self.policies.validate_input(state.original_input)
+        if not valid:
+            state.fail("输入无法处理，请重新描述问诊问题。", "INPUT_VALIDATION_ERROR")
+            yield {"type": "error", "content": state.error_message, "run_id": state.run_id}
+            return
+        state.start()
+        self.event_bus.publish(RunStartedEvent(state.run_id, state.goal, "[content omitted]"))
+        answer, sources, waiting = INSUFFICIENT, [], False
+        try:
+            # Urgent current symptoms must not wait for memory, retrieval or an LLM.
+            flags = urgent_signals(state.original_input or "")
+            if flags:
+                state.patient = {"is_medical": True, "urgent": True, "red_flags": flags}
+                state.task_type = "knowledge_qa"
+                answer, state.stop_reason = ESCALATION, "urgent_risk"
+                yield {"type": "routed", "task_type": state.task_type, "run_id": state.run_id}
+            else:
+                if state.conversation_id:
+                    yield from self._step(state, "memory_read")
+                if self._is_greeting(state.original_input):
+                    state.task_type = "chitchat"
+                    answer = "你好，我是问诊与护理知识助手。请描述你的症状或想了解的问题。"
+                    state.stop_reason = "greeting"
+                    yield {"type": "routed", "task_type": state.task_type, "run_id": state.run_id}
+                else:
+                    yield from self._step(state, "patient_assessment", self._assess)
+                    state.task_type = "knowledge_qa"
+                    yield {"type": "routed", "task_type": state.task_type, "run_id": state.run_id}
+                    answer, sources, waiting = yield from self._loop(state)
+        except TimeoutError:
+            state.stop_reason = state.stop_reason or "timeout"
+            answer = "本轮处理已达到执行上限。" + INSUFFICIENT
+        except InterruptedError:
+            state.interrupt()
+            yield {"type": "error", "content": "本次问诊已中断。", "run_id": state.run_id}
+            return
+        except Exception:
+            # Do not expose SDK exceptions, credentials or patient data in traces.
+            logger.warning("Agent run failed; run_id=%s", state.run_id)
+            state.fail("问诊处理暂时失败，请稍后重试。", "AGENT_EXECUTION_ERROR")
+            self.event_bus.publish(
+                RunFailedEvent(state.run_id, state.error_message, state.error_code)
+            )
+            yield {"type": "error", "content": state.error_message, "run_id": state.run_id}
+            return
 
-    def _get_step_type(self, step_name: str) -> StepType:  # 将步骤名称映射为步骤类型枚举
-        """获取步骤类型"""  # 方法文档字符串
-        step_mapping = {  # 步骤名称到类型的映射字典
-            "intent_recognition": StepType.INTENT_RECOGNITION,  # 意图识别
-            "question_classification": StepType.QUESTION_CLASSIFICATION,  # 问题分类
-            "clarification": StepType.CLARIFICATION,  # 澄清
-            "question_rewrite": StepType.QUESTION_REWRITE,  # 问题改写
-            "knowledge_search": StepType.KNOWLEDGE_SEARCH,  # 知识检索
-            "result_evaluation": StepType.RESULT_EVALUATION,  # 结果评估
-            "answer_generation": StepType.ANSWER_GENERATION,  # 答案生成
-            "memory_read": StepType.MEMORY_READ,  # 记忆读取
-            "memory_write": StepType.MEMORY_WRITE,  # 记忆写入
-            "memory_compress": StepType.MEMORY_COMPRESS,  # 记忆压缩
-            "identity_answer": StepType.ANSWER_GENERATION,  # 身份回答（复用答案生成步骤）
-            "admin_operation": StepType.TOOL_CALL  # 管理操作（使用工具调用步骤）
+        if state.status == AgentStatus.INTERRUPTED:
+            yield {"type": "error", "content": "本次问诊已中断。", "run_id": state.run_id}
+            return
+        state.pending_answer = None
+        output = {
+            "answer": answer,
+            "sources": sources,
+            "has_sources": bool(sources),
+            "task_type": state.task_type,
+            "run_id": state.run_id,
+            "trace_id": state.trace_id,
+            "requires_input": waiting,
+            "stop_reason": state.stop_reason,
+            "evidence_sufficient": bool(sources),
+            "status": "waiting" if waiting else "completed",
         }
-        return step_mapping.get(step_name, StepType.TOOL_CALL)  # dict.get(key, default) 安全获取，未知步骤默认为 TOOL_CALL
+        state.final_output = output
+        # The business gateway also persists replies. A memory outage must not
+        # discard an already verified answer, and no new work starts after budget.
+        if state.conversation_id and self._remaining(state) > 0 and not state.is_max_steps_reached:
+            try:
+                memory_result = yield from self._step(state, "memory_write", self._save_reply)
+            except (TimeoutError, RuntimeError):
+                output["memory_saved"] = False
+            except InterruptedError:
+                state.interrupt()
+                yield {"type": "error", "content": "本次问诊已中断。", "run_id": state.run_id}
+                return
+            else:
+                output["memory_saved"] = bool(memory_result.get("success"))
+        state.final_output = output
+        if waiting:
+            state.wait()
+            state.end_time = time.time()
+        else:
+            state.complete(output)
+        self.event_bus.publish(RunCompletedEvent(state.run_id, output))
+        # Emit only verified final text; a rejected draft never reaches the client.
+        yield {"type": "sources", "content": sources}
+        if waiting:
+            yield {"type": "clarification", "content": {"content": answer, "requires_input": True}}
+        for index in range(0, len(answer), 32):
+            yield {"type": "token", "content": answer[index : index + 32]}
+        yield {"type": "end", "content": output}
 
-    def _handle_clarification(self, state: AgentState) -> Dict[str, Any]:  # 处理澄清请求
-        """处理澄清请求"""  # 方法文档字符串
-        clarification_step = None  # 初始化澄清步骤
-        for step in reversed(state.steps):  # reversed() 反向遍历步骤列表
-            if step.step_type == StepType.CLARIFICATION:  # 找到澄清步骤
-                clarification_step = step  # 记录找到的步骤
-                break  # 跳出循环
+    def _loop(self, state):
+        last_answer_round = -1
+        while state.decision_count < config.AGENT_MAX_DECISIONS:
+            decision_data = yield from self._step(state, "agent_decision", self._decide)
+            state.decision_count += 1
+            action = decision_data["action"]
+            if action == "ask_user":
+                state.stop_reason = "needs_user_input"
+                fields = decision_data.get("requested_fields") or state.patient.get(
+                    "missing_information"
+                )
+                fields = fields or ["伴随症状", "既往病史", "正在使用的药物"]
+                question = "为了继续评估，请补充：" + "、".join(fields[:3]) + "。"
+                return question, [], True
+            if action == "escalate":
+                state.stop_reason = (
+                    "urgent_risk" if state.patient.get("urgent") else "insufficient_evidence"
+                )
+                return (ESCALATION if state.patient.get("urgent") else INSUFFICIENT), [], False
+            if action == "search":
+                if len(state.searched_queries) >= config.AGENT_MAX_SEARCHES:
+                    state.stop_reason = "search_limit"
+                    break
+                query = decision_data["query"].strip()
+                key = self._query_key(query)
+                if not key or key in {self._query_key(q) for q in state.searched_queries}:
+                    state.stop_reason = "repeated_query" if key else "invalid_query"
+                    break
+                state.searched_queries.append(query)
+                state.evidence = {}
+                result = yield from self._step(
+                    state, "knowledge_search", parameters={"query": query}
+                )
+                yield from self._step(
+                    state,
+                    "result_evaluation",
+                    lambda working, step: self.consultation.evaluate(working, result),
+                )
+                continue
+            if action == "answer":
+                if not state.evidence.get("is_sufficient"):
+                    # A model cannot bypass the evidence gate by choosing answer.
+                    state.stop_reason = "answer_without_evidence"
+                    break
+                if last_answer_round == len(state.searched_queries):
+                    state.stop_reason = "repeated_answer"
+                    break
+                last_answer_round = len(state.searched_queries)
+                yield from self._step(state, "answer_generation", self._draft)
+                result = yield from self._step(state, "answer_verification", self._verify)
+                if result["passed"]:
+                    state.stop_reason = "answered"
+                    return result["answer"], result["sources"], False
+                state.evidence["is_sufficient"] = False
+                state.evidence["missing_aspects"] = ["回答中的结论未通过来源或安全校验"]
+                continue
+        if not state.stop_reason:
+            state.stop_reason = "decision_limit"
+        return INSUFFICIENT, [], False
 
-        if clarification_step and clarification_step.output_data.get("needs_clarification"):  # 如果需要澄清
-            prompt = clarification_step.output_data.get("prompt", "请提供更多信息")  # 获取澄清提示语
-            return {  # 返回澄清响应
-                "type": "clarification",  # 类型
-                "content": prompt,  # 提示语
-                "requires_input": True  # 需要用户输入
+    def _remaining(self, state):
+        return state.timeout_seconds - state.elapsed_time
+
+    def _step(self, state, name, operation=None, parameters=None):
+        if state.status == AgentStatus.INTERRUPTED:
+            raise InterruptedError()
+        if self._remaining(state) <= 0:
+            raise TimeoutError()
+        if state.is_max_steps_reached:
+            state.stop_reason = "step_limit"
+            raise TimeoutError()
+        state.planned_steps.append(name)
+        step = state.add_step(self._get_step_type(name), name, parameters or {})
+        step.start()
+        self.event_bus.publish(
+            StepStartedEvent(state.run_id, step.step_id, name, step.step_type.value)
+        )
+        yield {
+            "type": "step_started",
+            "step_name": name,
+            "step_type": step.step_type.value,
+            "step_id": step.step_id,
+            "run_id": state.run_id,
+        }
+        if state.status == AgentStatus.INTERRUPTED:
+            raise InterruptedError()
+        working = deepcopy(state)
+        working_step = working.steps[-1]
+
+        def execute():
+            if operation:
+                working_step.complete(operation(working, working_step))
+            else:
+                self.executor.execute_step(working, working_step)
+            return working
+
+        try:
+            updated = call_with_timeout(
+                execute, min(config.AGENT_STEP_TIMEOUT_SECONDS, self._remaining(state))
+            )
+            if state.status == AgentStatus.INTERRUPTED:
+                raise InterruptedError()
+            if self._remaining(state) <= 0:
+                raise TimeoutError()
+            # Commit only completed work. A late worker cannot mutate live state.
+            state.__dict__.update(updated.__dict__)
+            step = state.steps[-1]
+        except Exception as exc:
+            step.fail(type(exc).__name__)
+            self.event_bus.publish(
+                StepFailedEvent(
+                    state.run_id, step.step_id, name, step.step_type.value, type(exc).__name__
+                )
+            )
+            yield {"type": "step_failed", "step_name": name, "error": type(exc).__name__}
+            raise
+        self.event_bus.publish(
+            StepCompletedEvent(
+                state.run_id,
+                step.step_id,
+                name,
+                step.step_type.value,
+                step.output_data,
+                step.duration_ms or 0,
+            )
+        )
+        yield {
+            "type": "step_completed",
+            "step_name": name,
+            "step_id": step.step_id,
+            "output": step.output_data,
+        }
+        return step.output_data
+
+    def _assess(self, state, step):
+        return self.consultation.assess(state)
+
+    def _decide(self, state, step):
+        return self.consultation.decide(state).model_dump()
+
+    def _draft(self, state, step):
+        draft = self.consultation.draft(state)
+        state.pending_answer = draft.model_dump() if draft else None
+        return {"claim_count": len(draft.claims) if draft else 0}
+
+    def _verify(self, state, step):
+        draft = AnswerDraft.model_validate(state.pending_answer) if state.pending_answer else None
+        result = self.consultation.verify(state, draft)
+        state.pending_answer = None
+        return result
+
+    def _save_reply(self, state, step):
+        saved = self.executor.memory_agent.save_memory(
+            state, state.original_input, state.final_output["answer"]
+        )
+        return {"success": bool(saved)}
+
+    @staticmethod
+    def _is_greeting(text):
+        return bool(
+            re.fullmatch(
+                r"\s*(你好|您好|谢谢|感谢|再见|嗨|hello|hi|你是谁)[！!。，,.？?\s]*",
+                text or "",
+                re.I,
+            )
+        )
+
+    @staticmethod
+    def _query_key(query):
+        return re.sub(r"[\W_]+", "", query.casefold())
+
+    @staticmethod
+    def _get_step_type(name):
+        mapping = {item.value: item for item in StepType}
+        mapping.update(
+            {
+                "patient_assessment": StepType.QUESTION_CLASSIFICATION,
+                "agent_decision": StepType.INTENT_RECOGNITION,
+                "answer_verification": StepType.RESULT_EVALUATION,
+                "identity_answer": StepType.ANSWER_GENERATION,
             }
+        )
+        return mapping.get(name, StepType.TOOL_CALL)
 
-        return {  # 默认澄清响应
-            "type": "clarification",  # 类型
-            "content": "请详细描述您的问题",  # 默认提示语
-            "requires_input": True  # 需要用户输入
+    @staticmethod
+    def _build_error_response(state):
+        return {
+            "answer": state.error_message or "问诊未完成，请重试。",
+            "sources": [],
+            "error": True,
+            "status": state.status.value,
+            "error_code": state.error_code,
         }
 
-    def _build_success_response(self, state: AgentState) -> Dict[str, Any]:  # 构建成功响应
-        """构建成功响应"""  # 方法文档字符串
-        answer = None  # 初始化答案
-        sources = []  # 初始化来源列表
+    def get_state(self, run_id):
+        return self._states.get(run_id)
 
-        for step in reversed(state.steps):  # 反向遍历步骤
-            if step.step_type == StepType.ANSWER_GENERATION and step.output_data:  # 找到答案生成步骤
-                answer = step.output_data.get("answer", "")  # 获取答案
-                sources = step.output_data.get("sources", [])  # 获取来源
-                break  # 跳出循环
+    def get_all_states(self):
+        return dict(self._states)
 
-        if answer is None:  # 如果没有生成答案
-            answer = "抱歉，我无法生成回答。"  # 使用默认提示
+    def clear_state(self, run_id):
+        return self._states.pop(run_id, None) is not None
 
-        return self.policies.format_response(answer, sources, True, "knowledge_qa")  # 使用策略格式化响应
-
-    def _build_error_response(self, state: AgentState) -> Dict[str, Any]:  # 构建错误响应
-        """构建错误响应"""  # 方法文档字符串
-        return {  # 返回错误响应字典
-            "answer": state.error_message or "服务暂时不可用，请稍后再试。",  # 错误信息或默认提示
-            "sources": [],  # 无来源
-            "has_sources": False,  # 没有来源
-            "error": True,  # 标记为错误响应
-            "error_code": state.error_code  # 错误码
-        }
-
-    def get_state(self, run_id: str) -> Optional[AgentState]:  # 获取 Agent 状态
-        """获取Agent状态"""  # 方法文档字符串
-        return self._states.get(run_id)  # 从内部字典获取状态，不存在时返回 None
-
-    def get_all_states(self) -> Dict[str, AgentState]:  # 获取所有存储的状态
-        """获取所有存储的Agent状态"""  # 方法文档字符串
-        return dict(self._states)  # 返回副本，防止外部修改影响内部数据（类似 Java 的 new HashMap<>(map)）
-
-    def clear_state(self, run_id: str) -> bool:  # 清理指定 run_id 的状态
-        """清理指定运行的状态"""  # 方法文档字符串
-        if run_id in self._states:  # 如果状态存在
-            del self._states[run_id]  # 删除状态记录
-            return True  # 返回删除成功
-        return False  # 状态不存在，返回 False
-
-    def interrupt(self, run_id: str) -> bool:  # 中断执行（预留接口）
-        """中断执行"""  # 方法文档字符串
-        if run_id in self._states:  # 如果状态存在
-            state = self._states[run_id]  # 获取状态
-            if state.status == AgentStatus.RUNNING:  # 如果正在运行
-                state.interrupt()  # 标记为中断状态
-                self.event_bus.publish(RunFailedEvent(  # 发布运行中断事件
-                    run_id=run_id,  # 运行 ID
-                    error="执行已被用户中断",  # 错误信息
-                    error_code="INTERRUPTED"  # 错误码
-                ))
-                return True  # 中断成功
-        return False  # 中断失败（状态不存在或非运行状态）
+    def interrupt(self, run_id):
+        state = self.get_state(run_id)
+        if state and state.status == AgentStatus.RUNNING:
+            state.interrupt()
+            return True
+        return False

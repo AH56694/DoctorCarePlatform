@@ -17,60 +17,18 @@ class TestStepTypeMapping:
         assert orchestrator._get_step_type("memory_compress") == StepType.MEMORY_COMPRESS
 
 
-class _Planner:
-    def plan_steps(self, state):
-        return ["answer_generation", "memory_write"]
-
-    def should_terminate(self, state):
-        return False, "正常运行中"
-
-
-class _Executor:
-    def __init__(self):
-        self.calls = []
-
-    def execute_step(self, state, step):
-        self.calls.append(step.step_name)
-        step.start()
-        if step.step_type == StepType.ANSWER_GENERATION:
-            step.complete({"answer": "回答", "sources": []})
-        else:
-            step.complete({"success": True})
+def test_sync_run_saves_final_reply_after_generation():
+    from .test_agent_loop import make_agent, QUESTION
+    agent = make_agent()
+    result = agent.run(QUESTION, conversation_id="conversation-1", run_id="sync")
+    saved = agent.executor.memory_agent.save_memory.call_args.args
+    assert saved[2] == result["answer"]
+    assert agent.get_state("sync").steps[-1].step_name == "memory_write"
 
 
-class _Policies:
-    def validate_input(self, input_text):
-        return True, None
-
-    def should_retry(self, retry_count, error):
-        return False
-
-    def format_response(self, answer, sources, success, task_type):
-        return {"answer": answer, "sources": sources, "task_type": task_type}
-
-
-def _orchestrator_for_lifecycle_test():
-    orchestrator = Orchestrator.__new__(Orchestrator)
-    orchestrator.planner = _Planner()
-    orchestrator.executor = _Executor()
-    orchestrator.event_bus = Mock()
-    orchestrator.policies = _Policies()
-    orchestrator._states = {}
-    return orchestrator
-
-
-def test_sync_run_executes_memory_write_after_answer_generation():
-    orchestrator = _orchestrator_for_lifecycle_test()
-
-    result = orchestrator.run("问题", conversation_id="conversation-1")
-
-    assert orchestrator.executor.calls == ["answer_generation", "memory_write"]
-    assert result["answer"] == "回答"
-
-
-def test_stream_run_executes_memory_write_after_answer_generation():
-    orchestrator = _orchestrator_for_lifecycle_test()
-
-    list(orchestrator.run_stream("问题", conversation_id="conversation-1"))
-
-    assert orchestrator.executor.calls == ["answer_generation", "memory_write"]
+def test_stream_run_saves_final_reply_after_verification():
+    from .test_agent_loop import make_agent, QUESTION
+    agent = make_agent()
+    list(agent.run_stream(QUESTION, conversation_id="conversation-1", run_id="stream"))
+    agent.executor.memory_agent.save_memory.assert_called_once()
+    assert agent.get_state("stream").steps[-1].step_name == "memory_write"

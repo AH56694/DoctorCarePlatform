@@ -62,44 +62,26 @@ class MemoryAgent:  # 记忆管理 Agent 类，负责主动管理记忆生命周
         context = "\n\n".join(context_parts) if context_parts else ""
         return self._limit_context(context)
 
-    def save_memory(self, state, question: str, answer: str):  # 保存记忆（用户问题 + AI 回答 + 提取偏好）
-        """保存记忆（用户问题 + AI回答 + 提取偏好）"""  # 方法文档字符串
-        if not state.conversation_id:  # 如果没有会话 ID
-            return  # 直接返回，不保存
-
-        # 1. 写入用户问题
-        if tool_registry.has_tool("conversation_memory_write"):  # 如果记忆写入工具可用
-            try:  # try-except 异常处理
-                tool_registry.invoke_tool(  # 调用记忆写入工具
-                    "conversation_memory_write",  # 工具名称
-                    {  # 工具参数
-                        "conversation_id": state.conversation_id,  # 会话 ID
-                        "role": "user",  # 角色：用户
-                        "content": question  # 用户问题内容
-                    },
-                    run_id=state.run_id  # 运行 ID
+    def save_memory(self, state, question: str, answer: str) -> bool:
+        """Persist both turns and report failures instead of claiming success."""
+        if not state.conversation_id or not tool_registry.has_tool("conversation_memory_write"):
+            return False
+        saved = True
+        for role, content in (("user", question), ("assistant", answer)):
+            try:
+                result = tool_registry.invoke_tool(
+                    "conversation_memory_write",
+                    {"conversation_id": state.conversation_id, "role": role, "content": content},
+                    run_id=state.run_id,
                 )
-            except Exception as e:  # 捕获异常
-                logger.warning(f"[{state.run_id}] MemoryAgent failed to write user message: {e}")  # 记录警告
-
-        # 2. 写入 AI 回答
-        if tool_registry.has_tool("conversation_memory_write"):  # 如果记忆写入工具可用
-            try:  # try-except 异常处理
-                tool_registry.invoke_tool(  # 调用记忆写入工具
-                    "conversation_memory_write",  # 工具名称
-                    {  # 工具参数
-                        "conversation_id": state.conversation_id,  # 会话 ID
-                        "role": "assistant",  # 角色：AI 助手
-                        "content": answer  # AI 回答内容
-                    },
-                    run_id=state.run_id  # 运行 ID
-                )
-            except Exception as e:  # 捕获异常
-                logger.warning(f"[{state.run_id}] MemoryAgent failed to write assistant message: {e}")  # 记录警告
-
-        # 3. 异步提取用户偏好（不阻塞主流程）
-        if state.user_id and config.MEMORY_EXTRACT_USER_PREFERENCES:
+                if isinstance(result, dict) and result.get("success") is False:
+                    saved = False
+            except Exception:
+                saved = False
+                logger.warning("Conversation memory write failed; run_id=%s, role=%s", state.run_id, role)
+        if saved and state.user_id and config.MEMORY_EXTRACT_USER_PREFERENCES:
             preference_executor.submit(self._extract_user_preference, state, question, answer)
+        return saved
 
     def _load_user_profile(self, user_id: str) -> Optional[Dict[str, Any]]:  # 加载用户画像，下划线前缀表示内部方法
         """加载用户画像"""  # 方法文档字符串

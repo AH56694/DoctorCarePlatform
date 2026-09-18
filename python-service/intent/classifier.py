@@ -6,6 +6,7 @@ from enum import Enum  # 导入枚举基类，用于定义一组命名常量
 from dataclasses import dataclass  # 导入 dataclass 装饰器
 from typing import Optional, Dict, ClassVar  # 导入类型注解：Optional（可选类型）、Dict（字典类型）、ClassVar（类变量类型注解，表示该属性属于类而非实例，类似 Java 的 static）
 import logging  # 导入日志模块
+from core.medical import is_medical_text
 
 logger = logging.getLogger(__name__)  # 获取当前模块的日志记录器
 
@@ -155,6 +156,9 @@ class IntentClassifier:  # 统一意图分类器类，优先使用 LLM，LLM 不
             IntentResult: 意图识别结果
         """  # 方法文档字符串（多行格式，描述参数和返回值）
         # 优先使用LLM进行意图识别
+        if is_medical_text(input_text):
+            return IntentResult(intent=IntentType.KNOWLEDGE_QA, confidence=1.0,
+                                reasoning="医疗内容优先进入证据检查流程")
         if self.llm_service and self.llm_service.llm:  # 检查 LLM 服务是否可用（注意 llm_service 可能是 False）
             try:  # try-except 处理 LLM 调用失败
                 result = self._classify_with_llm(input_text, is_admin)  # 使用 LLM 分类
