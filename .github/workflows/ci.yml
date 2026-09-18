@@ -18,7 +18,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Verify local process ownership and secret handling
         shell: powershell
         run: .\scripts\tests\test-local-processes.ps1
@@ -37,7 +37,7 @@ jobs:
             lock: python-service/requirements.lock
             tests: python-service/tests
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -70,7 +70,7 @@ jobs:
       run:
         working-directory: frontend
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -98,7 +98,7 @@ jobs:
       DATABASE_URL: mysql+pymysql://root:ci-only-password@127.0.0.1:3306/doctorcare_ci
       TEST_MYSQL_URL: mysql+pymysql://root:ci-only-password@127.0.0.1:3306/doctorcare_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
