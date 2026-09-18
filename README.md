@@ -2,6 +2,17 @@
 
 DoctorCarePlatform 是一个面向患者、家属、护理人员和平台管理员的智能医疗陪护与护理匹配平台。项目采用单仓库组织方式，包含 React 前端、FastAPI 业务后端、独立的 Python 智能问诊与知识检索服务，以及由 Docker Compose 管理的 MySQL、Redis、MinIO、Nginx 等基础设施。
 
+## 上线准备与迭代规范
+
+本轮安全与工程整改已落库；真实业务上线前仍需完成敏感数据保护、真实短信和身份接入、附件链路、医学评审及部署验收。
+
+- [企业级审计与整改报告](docs/企业级审计与整改报告.md)：已修复问题、验证结果、上线阻断项与后续迭代顺序。
+- [生产部署与运维手册](docs/生产部署与运维手册.md)：生产配置、MySQL 迁移、管理员初始化、健康检查及恢复流程。
+- [开发与贡献规范](CONTRIBUTING.md)：测试、依赖锁定、接口边界和数据库变更约定。
+- [AI 问诊决策闭环](python-service/docs/agent-loop.md)：已实现的 Agent Loop、追问恢复、证据校验与调用预算。
+- [医疗知识图谱设计方案](AI问诊医疗知识图谱详细设计方案.md)：GraphRAG 的设计评审稿，尚未接入运行链路。
+- [远程仓库推送检查](docs/远程仓库推送检查.md)：历史数据库风险、当前文件清理及仍待处理的历史记录。
+
 ## 服务组成
 
 | 目录 | 作用 | 主要技术 |
@@ -28,7 +39,7 @@ flowchart LR
     Backend -->|SQLAlchemy| MySQL[("MySQL\n doctor_care_platform")]
     Backend --> Redis[("Redis\n缓存/会话预留")]
     Backend --> MinIO[("MinIO\n文件对象预留")]
-    Backend --> SMS["Aliyun SMS\n短信通知"]
+    Backend --> SMS["SMS 适配器\n真实发送待接入"]
 
     PythonService -->|知识兼容表/运行日志| MySQL
     PythonService -->|会话记忆| Redis
@@ -66,7 +77,7 @@ docker compose up --build
 .\scripts\start-local.ps1
 ```
 
-当 MySQL volume 已存在但需要刷新表结构时：
+仅在开发演示环境初始化表结构时使用下列脚本；它不是生产迁移工具，不能用来升级已有真实业务数据：
 
 ```powershell
 .\scripts\init-mysql.ps1
@@ -77,6 +88,8 @@ docker compose up --build
 ```powershell
 .\scripts\stop-local.ps1
 ```
+
+启动脚本遇到端口占用会停止并提示处理；停止脚本只结束它记录的本项目进程，使用 `-WhatIf` 可预览，使用 `-KeepInfra` 可保留基础设施。旧版脚本启动的进程需在原终端手动停止。自定义内部服务令牌时，在启动前设置 `RAG_SERVICE_TOKEN` 环境变量，供两个服务共同继承。
 
 ## 手动开发命令
 
@@ -97,7 +110,7 @@ cd python-service
 
 ```powershell
 cd frontend
-npm install --cache .\.npm-cache
+npm ci --cache .\.npm-cache
 npm --cache .\.npm-cache run dev
 npm --cache .\.npm-cache run build
 ```
@@ -105,10 +118,15 @@ npm --cache .\.npm-cache run build
 测试：
 
 ```powershell
-pytest
+.\.venv\Scripts\python.exe -m pytest tests -q
 cd python-service
-..\.venv\Scripts\python.exe -m pytest
+..\.venv\Scripts\python.exe -m pytest tests -q
+cd ..\frontend
+npm test
+npm run build
 ```
+
+本地安装脚本包含 `requirements-dev.txt` 中的测试工具。生产镜像使用 Linux/Python 3.11 的带哈希锁文件，更新方式见贡献规范。
 
 ## 核心能力
 
@@ -119,7 +137,7 @@ cd python-service
 - 智能问诊：前端流式问答，后端保存 AI 会话与消息，Python 服务返回答案、引用来源、步骤和工具调用轨迹。
 - 管理后台：用户状态、证书审核、AI 模型配置、内容巡检、知识库入库/删除和管理日志。
 - 知识库：后台保存 `ai_knowledge_chunks` 业务记录，并同步调用 Python 服务写入 FAISS/Milvus 与兼容知识表。
-- 短信通知：后端记录短信通知，支持 Aliyun SMS 配置和通知重试。
+- 短信通知：记录通知及重试状态；真实供应商适配器尚未完成，配置密钥不会产生实际发送，接口明确返回失败或演练状态。
 
 ## 关键接口
 
@@ -144,6 +162,8 @@ cd python-service
 - `DELETE /api/v1/admin/knowledge-items/{item_id}`
 
 Python 智能问诊与知识检索接口：
+
+除 `/` 和 `/health` 外均为内部接口，需要 `X-Service-Token`。生产环境禁用 `/api/parse` 和接口文档，不直接面向浏览器开放。
 
 - `GET /health`
 - `POST /api/ask`
@@ -228,6 +248,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-recommen
 | `MYSQL_HOST`, `MYSQL_PORT`, `MYSQL_DATABASE`, `MYSQL_USERNAME`, `MYSQL_PASSWORD` | Python 服务访问 MySQL |
 | `REDIS_URL` | 后端和 Python 服务 Redis 连接 |
 | `RAG_SERVICE_URL` | 后端调用 Python 服务的基础地址 |
+| `RAG_SERVICE_TOKEN` | 两服务共享的内部调用秘密；生产至少 32 字符且须与 JWT 密钥不同 |
 | `USE_MILVUS` | `false` 时使用 FAISS 持久化目录，`true` 时使用 Milvus |
 | `VECTOR_STORE_PERSIST_DIR` | FAISS 索引持久化目录 |
 | `VECTOR_STORE_COLLECTION_NAME` | 向量集合名称 |
@@ -242,7 +263,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap-recommen
 
 ## 生产注意事项
 
-- 部署本次招聘安全升级前执行 `.\.venv\Scripts\alembic.exe upgrade head`，为应聘和邀请增加幂等字段及唯一约束。
+- 新 MySQL 数据库使用 `.\.venv\Scripts\python.exe -m alembic -c alembic.mysql.ini upgrade head`。已有数据库必须先比对结构、备份并验收专项迁移；不能使用历史 PostgreSQL 迁移链，也不能直接盖章跳过检查。详见生产运维手册。
 - 前端所有受保护请求必须携带登录返回的 Bearer Token；失效令牌需要重新登录。
 - 为 MySQL 配置独立账号、最小权限、备份与恢复策略。
 - 为模型 API key、短信密钥、数据库密码启用生产级密钥管理。
