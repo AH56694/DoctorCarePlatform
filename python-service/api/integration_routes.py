@@ -21,10 +21,10 @@ class KnowledgeIngestRequest(BaseModel):
     collection: str = Field(default="medical.symptom_inquiry", max_length=128)
     category: str = Field(default="medical", max_length=64)
     subcategory: str = Field(default="symptom_inquiry", max_length=64)
-    content: str = ""
+    content: str = Field(default="", max_length=1_000_000)
     file_name: str = Field(default="", max_length=255)
     file_type: str = Field(default="", max_length=120)
-    file_content_base64: str = ""
+    file_content_base64: str = Field(default="", max_length=8_000_000)
     source: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 

@@ -67,16 +67,16 @@ def should_return_sources(question: str) -> bool:  # 定义函数，参数 quest
                 # "什么是"应该匹配"什么是一级封锁协议"，但不匹配"是什么地方"
                 # 检查"什么是"是否出现在问题开头或前面有边界
                 if lower_question.startswith("什么是"):  # startswith 检查字符串是否以指定前缀开头（类似 Java 的 startsWith()）
-                    logger.info(f"Question starts with '什么是': {question} - will return sources if found")  # f-string 格式化字符串（类似 Java 的 String.format()）
+                    logger.info("AI request processing; content omitted")
                     return True  # 返回 True，表示应该返回文档引用
                 # 检查"什么是"是否作为独立词出现
                 pattern = r'(^|\s|[,.!?;:])什么是($|\s|[,.!?;:])'  # 正则表达式，匹配独立出现的"什么是"，r 前缀表示原始字符串（不转义）
                 if re.search(pattern, lower_question):  # re.search 在字符串中搜索正则匹配（类似 Java 的 Pattern.matcher().find()）
-                    logger.info(f"Question contains '什么是' as separate word: {question} - will return sources if found")
+                    logger.info("AI request processing; content omitted")
                     return True
             else:
                 # 对于其他关键词，简单匹配
-                logger.info(f"Question classified as knowledge-related (keyword: '{keyword}'): {question} - will return sources if found")
+                logger.info("AI request processing; content omitted")
                 return True
 
     # 2. 生活类、聊天类、娱乐类问题 - 不返回文档引用
@@ -125,16 +125,16 @@ def should_return_sources(question: str) -> bool:  # 定义函数，参数 quest
                 # "是什么地方"应该匹配"北京是什么地方"，但不匹配"什么是一级封锁协议"
                 # 检查"是什么地方"是否出现在问题中
                 if "是什么地方" in lower_question:
-                    logger.info(f"Question contains '是什么地方': {question} - will not return sources")
+                    logger.info("AI request processing; content omitted")
                     return False  # 返回 False，表示不应返回文档引用
             else:
                 # 对于其他生活类关键词，简单匹配
-                logger.info(f"Question classified as life/chat (keyword: '{keyword}'): {question} - will not return sources")
+                logger.info("AI request processing; content omitted")
                 return False
 
     # 3. 默认：对于不确定的问题，保守起见不返回文档引用
     # 只有明确的技术问题才返回引用，闲聊问题不返回
-    logger.info(f"Question classification uncertain: {question} - will NOT return sources by default")
+    logger.info("AI request processing; content omitted")
     return False  # 默认不返回文档引用
 
 # 初始化核心服务
@@ -245,13 +245,13 @@ async def ask_question(request: ChatRequest):  # 异步问答接口，参数自�
     """
     start_time = time.time()  # 记录请求开始时间
     try:  # 开始异常处理
-        logger.info(f"Received question: {request.question}, username: {request.username}, is_admin: {request.is_admin}")  # 记录收到的问答请求
+        logger.info("AI request processing; content omitted")
 
         # 处理身份相关问题
         lower_question = request.question.lower()  # 将问题转为小写
         identity_keywords = ["我是谁", "我叫什么", "我的名字", "我的身份"]  # 身份相关关键词列表
         if any(keyword in lower_question for keyword in identity_keywords) and request.username:  # any() 函数检查是否有任意一个关键词匹配（类似 Java Stream 的 anyMatch()）
-            logger.info(f"Answering identity question for user: {request.username}")  # 记录身份问题日志
+            logger.info("AI request processing; content omitted")
             answer = f"你是 {request.username}，是本系统的注册用户。"  # 生成身份回答
             response = {"answer": answer, "sources": [], "task_type": "chitchat"}  # 构造直接响应，不调用 Agent
         else:  # 非身份问题，走正常路由流程
@@ -317,13 +317,13 @@ async def ask_question_stream(request: ChatRequest):  # 异步流式问答接口
 
     async def event_generator():  # 定义异步生成器函数（生成器是 Python 特有概念，使用 yield 逐步产出数据，类似 Java 中的 Flux/Flowable）
         try:  # 开始异常处理
-            logger.info(f"Streaming question: {request.question}, username: {request.username}, is_admin: {request.is_admin}")  # 记录流式请求日志
+            logger.info("AI request processing; content omitted")
 
             # 处理身份相关问题
             lower_question = request.question.lower()  # 转为小写
             identity_keywords = ["我是谁", "我叫什么", "我的名字", "我的身份"]  # 身份关键词列表
             if any(keyword in lower_question for keyword in identity_keywords) and request.username:  # 检查是否为身份问题且有用户名
-                logger.info(f"Streaming identity answer for user: {request.username}")  # 记录身份流式回答日志
+                logger.info("AI request processing; content omitted")
                 answer = f"你是 {request.username}，是本系统的注册用户。"  # 生成身份回答
                 # 流式返回身份回答
                 for char in answer:  # 逐字符遍历回答文本

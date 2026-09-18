@@ -134,7 +134,7 @@ async def create_review(
 
 
 @router.get("", response_model=list[ReviewRead])
-async def list_reviews(
+def list_reviews(
     current_user: Annotated[User, Depends(get_current_user)],
     conversation_id: str | None = None,
     user_id: str | None = Query(default=None, description="Reviews received by this user"),
@@ -143,6 +143,9 @@ async def list_reviews(
 ) -> list[Review]:
     query = db.query(Review)
     if conversation_id:
+        conversation = _get_conversation(db, conversation_id)
+        if current_user.id not in {conversation.participant_a, conversation.participant_b}:
+            raise HTTPException(status_code=403, detail="Only participants can view conversation reviews")
         query = query.filter(Review.conversation_id == conversation_id)
     if user_id:
         query = query.filter(Review.reviewee_id == user_id)
@@ -152,7 +155,7 @@ async def list_reviews(
 
 
 @router.get("/trust/{user_id}", response_model=TrustSummaryRead)
-async def get_trust_summary(
+def get_trust_summary(
     user_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
@@ -161,7 +164,7 @@ async def get_trust_summary(
 
 
 @router.get("/conversations/{conversation_id}", response_model=list[ReviewRead])
-async def list_conversation_reviews(
+def list_conversation_reviews(
     conversation_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
@@ -181,7 +184,7 @@ async def list_conversation_reviews(
 
 
 @router.put("/{review_id}", response_model=ReviewRead)
-async def update_review(
+def update_review(
     review_id: str,
     payload: ReviewUpdate,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -199,6 +202,7 @@ async def update_review(
     review.score = payload.score
     review.tags = payload.tags
     review.comment = payload.comment
+    db.flush()
     _refresh_caregiver_rating(db, review.reviewee_id)
     db.commit()
     db.refresh(review)

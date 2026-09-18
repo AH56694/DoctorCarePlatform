@@ -548,8 +548,10 @@ class VectorStoreManager:  # 定义向量存储管理器类
             return False  # 返回失败
 
 
-# 创建单例实例
-vector_store_manager = VectorStoreManager()  # 模块级别创建向量存储管理器的全局单例
+from core.lazy_resource import LazyResource
+
+# Importing routing, tests, or health checks must not download/load model weights.
+vector_store_manager = LazyResource(VectorStoreManager)
 
 # 导出（保持兼容性，同时保留完整管理器）
 vector_store = vector_store_manager  # 创建别名，方便其他模块通过 vector_store 直接使用

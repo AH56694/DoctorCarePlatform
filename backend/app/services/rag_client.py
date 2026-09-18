@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from typing import Any
@@ -9,11 +10,14 @@ from backend.app.schemas.chat import AiChatRequest, AiChatResponse, IntentResult
 
 
 class RagServiceClient:
-    def __init__(self, base_url: str = str(settings.rag_service_url)) -> None:
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: str | None = None) -> None:
+        self.base_url = (base_url or str(settings.rag_service_url)).rstrip("/")
+        self.headers = {"X-Service-Token": settings.rag_service_token}
 
     async def chat(self, payload: AiChatRequest) -> AiChatResponse:
         data = await self._run_agent(payload)
+        if data.get("error") or data.get("status") in {"failed", "interrupted"}:
+            raise httpx.RequestError("AI agent run failed")
         task_type = str(data.get("task_type") or "knowledge_qa")
         return AiChatResponse(
             answer=str(data.get("answer") or ""),
@@ -30,33 +34,37 @@ class RagServiceClient:
 
     async def stream_chat_events(self, payload: AiChatRequest) -> AsyncIterator[dict[str, Any]]:
         agent_payload = self._agent_payload(payload)
-        async with httpx.AsyncClient(timeout=None, trust_env=False) as client:
-            async with client.stream(
-                "POST",
-                f"{self.base_url}/api/agent/run/stream",
-                json=agent_payload,
-            ) as response:
-                response.raise_for_status()
-                buffer = ""
-                async for chunk in response.aiter_text():
-                    buffer += chunk
-                    while "\n\n" in buffer:
-                        raw_event, buffer = buffer.split("\n\n", 1)
-                        parsed = self._parse_sse_event(raw_event)
-                        if parsed is not None:
-                            yield parsed
-                parsed = self._parse_sse_event(buffer)
-                if parsed is not None:
-                    yield parsed
+        timeout = httpx.Timeout(settings.rag_stream_timeout_seconds, connect=5.0, pool=5.0)
+        async with asyncio.timeout(settings.rag_stream_timeout_seconds):
+            async with httpx.AsyncClient(timeout=timeout, trust_env=False, headers=self.headers) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/api/agent/run/stream",
+                    json=agent_payload,
+                ) as response:
+                    response.raise_for_status()
+                    buffer = ""
+                    async for chunk in response.aiter_text():
+                        buffer += chunk
+                        if len(buffer) > 2_000_000:
+                            raise ValueError("Upstream SSE event exceeds the size limit")
+                        while "\n\n" in buffer:
+                            raw_event, buffer = buffer.split("\n\n", 1)
+                            parsed = self._parse_sse_event(raw_event)
+                            if parsed is not None:
+                                yield parsed
+                    parsed = self._parse_sse_event(buffer)
+                    if parsed is not None:
+                        yield parsed
 
     async def get_run_status(self, run_id: str) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=30, trust_env=False, headers=self.headers) as client:
             response = await client.get(f"{self.base_url}/api/agent/run/{run_id}")
             response.raise_for_status()
             return response.json()
 
     async def get_run_tool_calls(self, run_id: str) -> list[dict[str, Any]]:
-        async with httpx.AsyncClient(timeout=30, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=30, trust_env=False, headers=self.headers) as client:
             response = await client.get(f"{self.base_url}/api/agent/run/{run_id}/tool-calls")
             if response.status_code == 404:
                 return []
@@ -106,13 +114,13 @@ class RagServiceClient:
         return await self._post("/api/v1/knowledge/ingest", payload, timeout=120)
 
     async def delete_knowledge(self, doc_id: int) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=60, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=60, trust_env=False, headers=self.headers) as client:
             response = await client.delete(f"{self.base_url}/api/v1/knowledge/{doc_id}")
             response.raise_for_status()
             return response.json()
 
     async def _post(self, path: str, payload: dict[str, Any], timeout: int) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+        async with httpx.AsyncClient(timeout=timeout, trust_env=False, headers=self.headers) as client:
             response = await client.post(f"{self.base_url}{path}", json=payload)
             response.raise_for_status()
             return response.json()

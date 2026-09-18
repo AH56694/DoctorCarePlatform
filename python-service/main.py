@@ -5,10 +5,14 @@ import uvicorn
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from middleware.middlewares import TimingMiddleware
+from service_security import ServiceAuthMiddleware, service_token
 
 load_dotenv(dotenv_path=Path(__file__).parent / ".env")
+internal_token = service_token()
+production = os.getenv("APP_ENV", "development").strip().lower() in {"prod", "production"}
 
 import tools  # noqa: E402,F401  # Registers agent tools on startup.
 from api.agent_routes import router as agent_router  # noqa: E402
@@ -28,7 +32,12 @@ def _cors_origins() -> list[str]:
     ]
 
 
-app = FastAPI(title="DoctorCarePlatform Python AI Service", version="0.1.0")
+app = FastAPI(
+    title="DoctorCarePlatform Python AI Service", version="0.1.0",
+    docs_url=None if production else "/docs",
+    redoc_url=None if production else "/redoc",
+    openapi_url=None if production else "/openapi.json",
+)
 app.add_middleware(TimingMiddleware, enable=True, threshold=0.0)
 app.add_middleware(
     CORSMiddleware,
@@ -38,6 +47,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(ServiceAuthMiddleware, token=internal_token)
 app.include_router(router, prefix="/api")
 app.include_router(agent_router, prefix="/api")
 app.include_router(integration_router, prefix="/api/v1")
@@ -48,8 +58,23 @@ async def root() -> dict[str, str]:
     return {"message": "DoctorCarePlatform Python AI service is running"}
 
 
+@app.get("/ready")
+def readiness():
+    model_path = os.getenv("LOCAL_EMBEDDING_MODEL_PATH", "")
+    if production and (not model_path or not Path(model_path).is_dir()):
+        return JSONResponse({"status": "not_ready", "service": "python-service"}, status_code=503)
+    try:
+        from core.vector_store import vector_store_manager
+        vector_store_manager.get()
+    except Exception:
+        return JSONResponse({"status": "not_ready", "service": "python-service"}, status_code=503)
+    return {"status": "ready", "service": "python-service"}
+
+
 @app.get("/health")
 async def health_check() -> dict[str, object]:
+    if production:
+        return {"status": "ok", "service": "python-service"}
     use_milvus = os.getenv("USE_MILVUS", "false").lower() == "true"
     persist_dir = os.getenv("VECTOR_STORE_PERSIST_DIR", str(Path.cwd() / "faiss_index"))
     vector_store_info: dict[str, object]

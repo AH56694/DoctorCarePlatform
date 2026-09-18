@@ -228,7 +228,7 @@ def _validate_source_participants(db: Session, payload: ConversationCreate) -> N
 
 
 @router.post("", response_model=ConversationRead, status_code=status.HTTP_201_CREATED)
-async def create_conversation(
+def create_conversation(
     payload: ConversationCreate,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
@@ -272,7 +272,7 @@ async def create_conversation(
 
 
 @router.get("", response_model=list[ConversationRead])
-async def list_conversations(
+def list_conversations(
     current_user: Annotated[User, Depends(get_current_user)],
     user_id: str = Query(...),
     db: Session = Depends(get_db),
@@ -292,7 +292,7 @@ async def list_conversations(
 
 
 @router.get("/{conversation_id}/messages", response_model=list[MessageRead])
-async def list_messages(
+def list_messages(
     conversation_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     user_id: str = Query(...),
@@ -316,7 +316,7 @@ async def list_messages(
 
 
 @router.post("/{conversation_id}/messages", response_model=MessageRead, status_code=status.HTTP_201_CREATED)
-async def create_message(
+def create_message(
     conversation_id: str,
     payload: MessageCreate,
     current_user: Annotated[User, Depends(get_current_user)],

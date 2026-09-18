@@ -24,6 +24,7 @@ $localLlmTimeout = if ($env:LOCAL_LLM_TIMEOUT_SECONDS) { $env:LOCAL_LLM_TIMEOUT_
 $openaiCompatibleBaseUrl = if ($env:OPENAI_COMPATIBLE_BASE_URL) { $env:OPENAI_COMPATIBLE_BASE_URL } else { "" }
 $openaiCompatibleApiKey = if ($env:OPENAI_COMPATIBLE_API_KEY) { $env:OPENAI_COMPATIBLE_API_KEY } else { "" }
 $openaiCompatibleModel = if ($env:OPENAI_COMPATIBLE_MODEL) { $env:OPENAI_COMPATIBLE_MODEL } else { "" }
+$serviceToken = if ($env:RAG_SERVICE_TOKEN) { $env:RAG_SERVICE_TOKEN } else { "development-service-token" }
 
 function Assert-PathExists($path, $message) {
   if (-not (Test-Path $path)) {
@@ -31,25 +32,41 @@ function Assert-PathExists($path, $message) {
   }
 }
 
-function Stop-PortListeners($ports) {
-  $processIds = Get-NetTCPConnection -LocalPort $ports -ErrorAction SilentlyContinue |
-    Where-Object { $_.State -eq "Listen" -and $_.OwningProcess -gt 0 } |
-    Select-Object -ExpandProperty OwningProcess -Unique
-
-  foreach ($processId in $processIds) {
-    Stop-Process -Id $processId -Force -ErrorAction SilentlyContinue
+function Assert-PortsAvailable($ports) {
+  $listeners = @(Get-NetTCPConnection -LocalPort $ports -State Listen -ErrorAction SilentlyContinue)
+  if ($listeners.Count -gt 0) {
+    $occupied = ($listeners | Select-Object -ExpandProperty LocalPort -Unique) -join ", "
+    throw "Local ports are occupied: $occupied. Stop the owning service explicitly before starting this project."
   }
 }
 
-function Start-DevProcess($title, $workingDirectory, $command, $logPath) {
+function Start-DevProcess($title, $workingDirectory, $command, $logPath, $environment = @{}) {
   $logLiteral = $logPath.Replace("'", "''")
   $wrapped = "`$Host.UI.RawUI.WindowTitle = '$title'; `$ErrorActionPreference = 'Continue'; & { $command } *> '$logLiteral'"
   $windowStyle = if ($Visible) { "Normal" } else { "Hidden" }
-  return Start-Process powershell -WorkingDirectory $workingDirectory -WindowStyle $windowStyle -PassThru -ArgumentList @(
-    "-NoProfile",
-    "-ExecutionPolicy", "Bypass",
-    "-Command", $wrapped
-  )
+  $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($wrapped))
+  $previous = @{}
+  try {
+    # Children inherit secrets through their environment, never command-line arguments.
+    foreach ($key in $environment.Keys) {
+      $previous[$key] = [Environment]::GetEnvironmentVariable($key, 'Process')
+      [Environment]::SetEnvironmentVariable($key, [string]$environment[$key], 'Process')
+    }
+    $process = Start-Process powershell -WorkingDirectory $workingDirectory -WindowStyle $windowStyle -PassThru -ArgumentList @(
+      "-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encoded
+    )
+    @{
+      processId = $process.Id
+      startTicks = [string]$process.StartTime.ToUniversalTime().Ticks
+      projectRoot = $root
+      service = $title
+    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $logsDir "$($process.Id).process.json") -Encoding UTF8
+    return $process
+  } finally {
+    foreach ($key in $previous.Keys) {
+      [Environment]::SetEnvironmentVariable($key, $previous[$key], 'Process')
+    }
+  }
 }
 
 function Wait-Http($name, $url, $timeoutSeconds, $logPath) {
@@ -57,7 +74,7 @@ function Wait-Http($name, $url, $timeoutSeconds, $logPath) {
   while ((Get-Date) -lt $deadline) {
     try {
       $response = Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 5
-      if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
+      if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
         Write-Host "$name ready: $url"
         return
       }
@@ -77,17 +94,16 @@ function Wait-Http($name, $url, $timeoutSeconds, $logPath) {
 }
 
 Assert-PathExists (Join-Path $root ".venv\Scripts\python.exe") "Root Python virtual environment is missing. Create it and install requirements.txt first."
-Assert-PathExists (Join-Path $frontend "node_modules") "frontend node_modules is missing. Run npm install in frontend first."
+Assert-PathExists (Join-Path $frontend "node_modules") "frontend node_modules is missing. Run scripts/install-local.ps1 first."
 
 New-Item -ItemType Directory -Force -Path $logsDir | Out-Null
-Remove-Item -LiteralPath (Join-Path $logsDir "*.log") -Force -ErrorAction SilentlyContinue
-
-Stop-PortListeners @(5173, 8000, 8300)
+Assert-PortsAvailable @(5173, 8000, 8300)
 
 if (-not $SkipInfra) {
   Push-Location $root
   try {
     docker compose up -d redis minio mysql
+    if ($LASTEXITCODE -ne 0) { throw "Failed to start local infrastructure." }
     & (Join-Path $PSScriptRoot "init-mysql.ps1") -RootPassword $mysqlPassword
   } finally {
     Pop-Location
@@ -99,39 +115,41 @@ $backendLog = Join-Path $logsDir "backend.log"
 $frontendLog = Join-Path $logsDir "frontend.log"
 $rootPython = Join-Path $root ".venv\Scripts\python.exe"
 
-$ragCommand = @"
-`$env:PYTHONIOENCODING='utf-8';
-`$env:EMBEDDING_MODEL='local';
-`$env:LOCAL_EMBEDDING_MODEL_PATH='$localModelPath';
-`$env:USE_MILVUS='false';
-`$env:VECTOR_STORE_PERSIST_DIR='$faissPath';
-`$env:VECTOR_STORE_COLLECTION_NAME='doctorcare_medical_knowledge';
-`$env:REDIS_URL='redis://127.0.0.1:6379/0';
-`$env:REDIS_HOST='127.0.0.1';
-`$env:REDIS_PORT='6379';
-`$env:REDIS_DB='0';
-`$env:MYSQL_HOST='$mysqlHost';
-`$env:MYSQL_PORT='$mysqlPort';
-`$env:MYSQL_DATABASE='$mysqlDatabase';
-`$env:MYSQL_USERNAME='$mysqlUsername';
-`$env:MYSQL_PASSWORD='$mysqlPassword';
-`$env:LLM_FALLBACK_PROVIDERS='$llmFallbackProviders';
-`$env:OLLAMA_BASE_URL='$ollamaBaseUrl';
-`$env:OLLAMA_MODEL='$ollamaModel';
-`$env:LOCAL_LLM_TIMEOUT_SECONDS='$localLlmTimeout';
-`$env:OPENAI_COMPATIBLE_BASE_URL='$openaiCompatibleBaseUrl';
-`$env:OPENAI_COMPATIBLE_API_KEY='$openaiCompatibleApiKey';
-`$env:OPENAI_COMPATIBLE_MODEL='$openaiCompatibleModel';
-& '$rootPython' -m uvicorn main:app --reload --host 127.0.0.1 --port 8300
-"@
-
-$backendCommand = @"
-`$env:PYTHONIOENCODING='utf-8';
-`$env:DATABASE_URL='mysql+pymysql://$($mysqlUsername):$($mysqlPasswordEscaped)@$($mysqlHost):$($mysqlPort)/$($mysqlDatabase)?charset=utf8mb4';
-`$env:RAG_SERVICE_URL='http://127.0.0.1:8300';
-`$env:REDIS_URL='redis://127.0.0.1:6379/0';
-.\.venv\Scripts\python.exe -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
-"@
+$ragEnvironment = @{
+  RAG_SERVICE_TOKEN = $serviceToken
+  PYTHONIOENCODING = 'utf-8'
+  EMBEDDING_MODEL = 'local'
+  LOCAL_EMBEDDING_MODEL_PATH = $localModelPath
+  USE_MILVUS = 'false'
+  VECTOR_STORE_PERSIST_DIR = $faissPath
+  VECTOR_STORE_COLLECTION_NAME = 'doctorcare_medical_knowledge'
+  REDIS_URL = 'redis://127.0.0.1:6379/0'
+  REDIS_HOST = '127.0.0.1'
+  REDIS_PORT = '6379'
+  REDIS_DB = '0'
+  MYSQL_HOST = $mysqlHost
+  MYSQL_PORT = $mysqlPort
+  MYSQL_DATABASE = $mysqlDatabase
+  MYSQL_USERNAME = $mysqlUsername
+  MYSQL_PASSWORD = $mysqlPassword
+  LLM_FALLBACK_PROVIDERS = $llmFallbackProviders
+  OLLAMA_BASE_URL = $ollamaBaseUrl
+  OLLAMA_MODEL = $ollamaModel
+  LOCAL_LLM_TIMEOUT_SECONDS = $localLlmTimeout
+  OPENAI_COMPATIBLE_BASE_URL = $openaiCompatibleBaseUrl
+  OPENAI_COMPATIBLE_API_KEY = $openaiCompatibleApiKey
+  OPENAI_COMPATIBLE_MODEL = $openaiCompatibleModel
+}
+$backendEnvironment = @{
+  RAG_SERVICE_TOKEN = $serviceToken
+  PYTHONIOENCODING = 'utf-8'
+  DATABASE_URL = "mysql+pymysql://$([Uri]::EscapeDataString($mysqlUsername)):$($mysqlPasswordEscaped)@$($mysqlHost):$($mysqlPort)/$($mysqlDatabase)?charset=utf8mb4"
+  RAG_SERVICE_URL = 'http://127.0.0.1:8300'
+  REDIS_URL = 'redis://127.0.0.1:6379/0'
+}
+$pythonLiteral = $rootPython.Replace("'", "''")
+$ragCommand = "& '$pythonLiteral' -m uvicorn main:app --reload --no-access-log --host 127.0.0.1 --port 8300"
+$backendCommand = "& '$pythonLiteral' -m uvicorn backend.app.main:app --reload --no-access-log --host 127.0.0.1 --port 8000"
 
 $pythonServiceModuleCheck = @"
 import importlib
@@ -158,6 +176,7 @@ if missing:
 
 try {
   $pythonServiceModuleCheck | & $rootPython -
+  if ($LASTEXITCODE -ne 0) { throw "Python service dependency check failed." }
 } catch {
   Write-Host "python-service dependencies are not installed in the root .venv."
   Write-Host "Run: .\scripts\install-local.ps1"
@@ -166,11 +185,11 @@ try {
 
 $frontendCommand = "npm run dev -- --host 127.0.0.1"
 
-$ragProcess = Start-DevProcess "DoctorCare RAG python-service :8300" $pythonService $ragCommand $ragLog
+$ragProcess = Start-DevProcess "DoctorCare RAG python-service :8300" $pythonService $ragCommand $ragLog $ragEnvironment
 Write-Host "Started RAG service process: $($ragProcess.Id)"
 Wait-Http "RAG service" "http://127.0.0.1:8300/health" 240 $ragLog
 
-$backendProcess = Start-DevProcess "DoctorCare backend :8000" $root $backendCommand $backendLog
+$backendProcess = Start-DevProcess "DoctorCare backend :8000" $root $backendCommand $backendLog $backendEnvironment
 Write-Host "Started backend process: $($backendProcess.Id)"
 Wait-Http "Backend" "http://127.0.0.1:8000/health" 90 $backendLog
 

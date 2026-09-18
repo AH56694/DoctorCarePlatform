@@ -95,7 +95,7 @@ class QuestionRewriteTool(Tool):  # 问题重写工具，继承自 Tool 抽象�
             # 清理结果
             rewritten_question = rewritten_question.strip()  # strip() 去除首尾空白字符（类似 Java 的 String.trim()）
 
-            config.logger.info(f"Question rewritten: '{question}' -> '{rewritten_question}'")  # 记录重写结果日志
+            config.logger.info("AI request processing; content omitted")
 
             return {  # 返回结果字典
                 "rewritten_question": rewritten_question,  # 重写后的问题

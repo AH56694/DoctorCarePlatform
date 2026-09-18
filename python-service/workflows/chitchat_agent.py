@@ -60,7 +60,7 @@ class ChitChatAgent:  # 定义闲聊 Agent 类
         Returns:
             包含answer的字典
         """
-        logger.info(f"[ChitChatAgent] Processing chitchat: {question[:50]}...")  # question[:50] 截取前50个字符
+        logger.info("AI request processing; content omitted")
 
         try:
             # 1. 读取会话记忆作为上下文
@@ -154,7 +154,7 @@ class ChitChatAgent:  # 定义闲聊 Agent 类
         Yields:
             JSON格式的事件流
         """
-        logger.info(f"[ChitChatAgent] Stream chitchat: {question[:50]}...")
+        logger.info("AI request processing; content omitted")
 
         try:
             answer = self._generate_chitchat_response(question)  # 生成完整回复（注意流式模式下未传对话历史）

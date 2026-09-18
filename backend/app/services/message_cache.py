@@ -14,7 +14,9 @@ logger = logging.getLogger(__name__)
 class MessageCache:
     def __init__(self, redis_url: str = settings.redis_url, ttl_seconds: int = 86400) -> None:
         self.ttl_seconds = ttl_seconds
-        self.client = Redis.from_url(redis_url, decode_responses=True)
+        self.client = Redis.from_url(
+            redis_url, decode_responses=True, socket_connect_timeout=1, socket_timeout=1,
+        )
 
     def add_message(
         self,
@@ -30,8 +32,11 @@ class MessageCache:
             "cached_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            self.client.rpush(key, json.dumps(message, ensure_ascii=False, default=str))
-            self.client.expire(key, self.ttl_seconds)
+            with self.client.pipeline() as pipe:
+                pipe.rpush(key, json.dumps(message, ensure_ascii=False, default=str))
+                pipe.ltrim(key, -500, -1)
+                pipe.expire(key, self.ttl_seconds)
+                pipe.execute()
         except RedisError as exc:
             logger.warning("Failed to cache %s message for %s: %s", namespace, conversation_id, exc)
 

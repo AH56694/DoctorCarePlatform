@@ -60,7 +60,7 @@ class RouterAgent:  # 定义路由 Agent 类（类似 Java 的 class RouterAgent
             执行结果
         """
         task_type = self.classify_task(input_text, is_admin)  # 调用分类方法，确定任务类型
-        logger.info(f"[RouterAgent] Routing to: {task_type.value} for input: {input_text[:50]}...")  # f-string 格式化字符串（类似 Java 的 String.format），task_type.value 获取枚举值
+        logger.info("AI request processing; content omitted")
 
         try:  # try-except 异常处理（类似 Java 的 try-catch）
             if task_type == TaskType.CHITCHAT:  # 判断任务类型是否为闲聊

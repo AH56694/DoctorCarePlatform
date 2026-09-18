@@ -25,7 +25,10 @@ def test_first_turn_uses_precreated_session_id_for_ai_memory(monkeypatch) -> Non
     monkeypatch.setattr(chat_routes, "_persist_ai_messages", lambda *args, **kwargs: session)
     monkeypatch.setattr(chat_routes.RagServiceClient, "chat", fake_chat)
 
-    result = asyncio.run(chat_routes.chat(AiChatRequest(message="第一轮问题"), db=Mock()))
+    current_user = SimpleNamespace(id="user-1", active_role="patient", roles=[])
+    result = asyncio.run(
+        chat_routes.chat(AiChatRequest(message="第一轮问题"), current_user=current_user, db=Mock())
+    )
 
     assert captured["conversation_id"] == "generated-session"
     assert result.session_id == "generated-session"
@@ -44,3 +47,19 @@ def test_attachment_context_has_global_budget() -> None:
 
     assert combined.count("x" * chat_routes.MAX_ATTACHMENT_ITEM_CHARS) == 3
     assert "file-3.txt" not in combined
+
+
+def test_rejected_agent_evidence_clears_previously_streamed_sources():
+    from backend.app.services.rag_client import RagServiceClient
+
+    state = {"sources": [{"title": "候选资料"}], "answer_parts": []}
+    events = chat_routes._normalize_stream_event(
+        {"type": "sources", "content": []}, state, RagServiceClient(),
+    )
+    assert state["sources"] == []
+    assert events == [{"type": "sources", "sources": []}]
+    state["sources"] = [{"title": "旧的候选资料"}]
+    chat_routes._normalize_stream_event(
+        {"type": "end", "content": {"answer": "资料不足", "sources": []}}, state, RagServiceClient(),
+    )
+    assert state["sources"] == []

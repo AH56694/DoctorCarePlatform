@@ -123,7 +123,7 @@ def _certification_read(certification: Certification) -> AdminCertificationRead:
 
 
 @router.get("/summary", response_model=AdminSummaryRead)
-async def get_admin_summary(db: Session = Depends(get_db)) -> AdminSummaryRead:
+def get_admin_summary(db: Session = Depends(get_db)) -> AdminSummaryRead:
     return AdminSummaryRead(
         users=db.query(func.count(User.id)).scalar() or 0,
         active_jobs=db.query(func.count(JobPosting.id)).filter(JobPosting.status.in_(["published", "matched"])).scalar() or 0,
@@ -138,7 +138,7 @@ async def get_admin_summary(db: Session = Depends(get_db)) -> AdminSummaryRead:
 
 
 @router.get("/users", response_model=list[AdminUserRead])
-async def list_users(
+def list_users(
     keyword: str | None = None,
     status_filter: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=100, ge=1, le=500),
@@ -165,7 +165,7 @@ async def list_users(
 
 
 @router.patch("/users/{user_id}/status", response_model=AdminUserRead)
-async def update_user_status(
+def update_user_status(
     user_id: str,
     payload: AdminUserStatusUpdate,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -196,7 +196,7 @@ async def update_user_status(
 
 
 @router.get("/certifications", response_model=list[AdminCertificationRead])
-async def list_certifications(
+def list_certifications(
     status_filter: str | None = Query(default="pending", alias="status"),
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
@@ -225,7 +225,6 @@ async def review_certification(
     caregiver = certification.caregiver_profile
     if caregiver:
         caregiver.verification_status = payload.review_status
-        caregiver.id_verified = payload.review_status == "approved"
         role = db.query(UserRole).filter(UserRole.user_id == caregiver.user_id, UserRole.role == "caregiver").first()
         if role:
             role.verification_status = payload.review_status
@@ -257,7 +256,7 @@ async def review_certification(
 
 
 @router.get("/content/ai-messages", response_model=list[AdminAiMessageRead])
-async def list_ai_messages(
+def list_ai_messages(
     intent_category: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
@@ -283,7 +282,7 @@ async def list_ai_messages(
 
 
 @router.get("/content/chat-messages", response_model=list[AdminChatMessageRead])
-async def list_chat_messages(
+def list_chat_messages(
     conversation_id: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
@@ -308,7 +307,7 @@ async def list_chat_messages(
 
 
 @router.get("/knowledge-items", response_model=list[AdminKnowledgeRead])
-async def list_knowledge_items(
+def list_knowledge_items(
     collection: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
@@ -321,7 +320,7 @@ async def list_knowledge_items(
 
 
 @router.post("/knowledge-items", response_model=AdminKnowledgeRead, status_code=status.HTTP_201_CREATED)
-async def create_knowledge_item(
+def create_knowledge_item(
     payload: AdminKnowledgeCreate,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
@@ -497,12 +496,12 @@ async def delete_knowledge_item(
 
 
 @router.get("/ai-model-configs", response_model=list[AdminAiModelConfigRead])
-async def list_ai_model_configs(db: Session = Depends(get_db)) -> list[AiModelConfig]:
+def list_ai_model_configs(db: Session = Depends(get_db)) -> list[AiModelConfig]:
     return db.query(AiModelConfig).order_by(AiModelConfig.is_active.desc(), AiModelConfig.created_at.desc()).all()
 
 
 @router.post("/ai-model-configs", response_model=AdminAiModelConfigRead, status_code=status.HTTP_201_CREATED)
-async def create_ai_model_config(
+def create_ai_model_config(
     payload: AdminAiModelConfigCreate,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
@@ -527,7 +526,7 @@ async def create_ai_model_config(
 
 
 @router.patch("/ai-model-configs/{config_id}", response_model=AdminAiModelConfigRead)
-async def update_ai_model_config(
+def update_ai_model_config(
     config_id: str,
     payload: AdminAiModelConfigUpdate,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -556,7 +555,7 @@ async def update_ai_model_config(
 
 
 @router.post("/ai-model-configs/{config_id}/activate", response_model=AdminAiModelConfigRead)
-async def activate_ai_model_config(
+def activate_ai_model_config(
     config_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
@@ -581,7 +580,7 @@ async def activate_ai_model_config(
 
 
 @router.delete("/ai-model-configs/{config_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_ai_model_config(
+def delete_ai_model_config(
     config_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
@@ -605,7 +604,7 @@ async def delete_ai_model_config(
 
 
 @router.get("/logs", response_model=list[AdminLogRead])
-async def list_admin_logs(
+def list_admin_logs(
     action: str | None = None,
     target_type: str | None = None,
     limit: int = Query(default=100, ge=1, le=500),

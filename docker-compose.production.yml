@@ -1,0 +1,108 @@
+name: doctorcare-production
+
+x-runtime: &runtime
+  restart: unless-stopped
+  init: true
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  pids_limit: 256
+  logging:
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
+
+x-backend-env: &backend-env
+  APP_ENV: production
+  DATABASE_URL: ${DATABASE_URL:?Set the application MySQL URL}
+  REDIS_URL: ${REDIS_URL:?Set the private Redis URL}
+  AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:?Set an independent random JWT secret}
+  RAG_SERVICE_TOKEN: ${RAG_SERVICE_TOKEN:?Set an independent random service secret}
+  CORS_ORIGINS: ${CORS_ORIGINS:?Set explicit HTTPS origins as a JSON array}
+  RAG_SERVICE_URL: http://python-service:8300
+
+services:
+  migrate:
+    build: {context: ., dockerfile: backend/Dockerfile}
+    environment:
+      <<: *backend-env
+      DATABASE_URL: ${DATABASE_MIGRATION_URL:?Set a dedicated migration MySQL URL}
+    command: ["alembic", "-c", "alembic.mysql.ini", "upgrade", "head"]
+    profiles: ["migration"]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+
+  backend:
+    <<: *runtime
+    build: {context: ., dockerfile: backend/Dockerfile}
+    environment: *backend-env
+    read_only: true
+    tmpfs: ["/tmp:size=64m,mode=1777"]
+    mem_limit: 2g
+    cpus: 2
+    depends_on:
+      python-service: {condition: service_healthy}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  python-service:
+    <<: *runtime
+    build: {context: ., dockerfile: python-service/Dockerfile}
+    environment:
+      AGENT_MAX_SEARCHES: ${AGENT_MAX_SEARCHES:-3}
+      AGENT_MAX_DECISIONS: ${AGENT_MAX_DECISIONS:-6}
+      AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-24}
+      AGENT_TIMEOUT_SECONDS: ${AGENT_TIMEOUT_SECONDS:-80}
+      AGENT_STEP_TIMEOUT_SECONDS: ${AGENT_STEP_TIMEOUT_SECONDS:-20}
+      APP_ENV: production
+      RAG_SERVICE_TOKEN: ${RAG_SERVICE_TOKEN:?Set the service secret}
+      MYSQL_HOST: ${MYSQL_HOST:?Set the private MySQL host}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-doctor_care_platform}
+      MYSQL_USERNAME: ${MYSQL_USERNAME:?Set the AI service MySQL user}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set the AI service MySQL password}
+      REDIS_URL: ${REDIS_URL:?Set the private Redis URL}
+      USE_MILVUS: "false"
+      EMBEDDING_MODEL: local
+      LOCAL_EMBEDDING_MODEL_PATH: /app/models/embedding
+      VECTOR_STORE_PERSIST_DIR: /app/faiss_index
+      TEMP_DIR: /tmp/documents
+      LLM_FALLBACK_PROVIDERS: ${LLM_FALLBACK_PROVIDERS:-openai_compatible,retrieval}
+      OPENAI_COMPATIBLE_BASE_URL: ${OPENAI_COMPATIBLE_BASE_URL:-}
+      OPENAI_COMPATIBLE_API_KEY: ${OPENAI_COMPATIBLE_API_KEY:-}
+      OPENAI_COMPATIBLE_MODEL: ${OPENAI_COMPATIBLE_MODEL:-}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+    read_only: true
+    tmpfs: ["/tmp:size=512m,mode=1777"]
+    volumes:
+      - ${AI_MODELS_DIR:?Set the local embedding model directory}:/app/models/embedding:ro
+      - ai-index:/app/faiss_index
+    mem_limit: 4g
+    cpus: 2
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8300/ready',headers={'X-Service-Token':os.environ['RAG_SERVICE_TOKEN']}); urllib.request.urlopen(r,timeout=15)"]
+      interval: 30s
+      timeout: 20s
+      retries: 5
+      start_period: 120s
+
+  frontend:
+    build: {context: ./frontend}
+    restart: unless-stopped
+    depends_on:
+      backend: {condition: service_healthy}
+    mem_limit: 128m
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on: [frontend]
+    # Terminate HTTPS at the host ingress/load balancer. No internal service is published.
+    ports: ["127.0.0.1:8080:80"]
+    volumes: ["./infra/nginx.conf:/etc/nginx/nginx.conf:ro"]
+    mem_limit: 128m
+
+volumes:
+  ai-index:

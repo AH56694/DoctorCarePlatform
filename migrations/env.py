@@ -7,7 +7,11 @@ from backend.app.core.config import settings
 from backend.app.db.models import Base
 
 config = context.config
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+if settings.database_url.startswith("mysql") and "mysql_versions" not in (
+    config.get_main_option("version_locations") or ""
+):
+    raise RuntimeError("MySQL deployments must use: alembic -c alembic.mysql.ini upgrade head")
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

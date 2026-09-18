@@ -1,17 +1,26 @@
-﻿from pydantic import BaseModel, Field
+import unicodedata
+
+from pydantic import BaseModel, Field, field_validator
 
 RoleName = str
 
 
-class UserRegister(BaseModel):
-    phone: str = Field(min_length=5, max_length=32)
-    password: str = Field(min_length=6, max_length=128)
+class PhoneCredentials(BaseModel):
+    phone: str = Field(min_length=5, max_length=16, pattern=r"^\+?[0-9]{5,15}$")
+
+    @field_validator("phone", mode="before")
+    @classmethod
+    def normalize_phone(cls, value):
+        return unicodedata.normalize("NFKC", value).strip() if isinstance(value, str) else value
+
+
+class UserRegister(PhoneCredentials):
+    password: str = Field(min_length=8, max_length=128)
     display_name: str = Field(default="", max_length=80)
     initial_role: RoleName = "patient"
 
 
-class UserLogin(BaseModel):
-    phone: str = Field(min_length=5, max_length=32)
+class UserLogin(PhoneCredentials):
     password: str = Field(min_length=1, max_length=128)
 
 
@@ -25,13 +34,13 @@ class RoleCreateRequest(BaseModel):
 
 class PatientProfileUpdate(BaseModel):
     real_name: str = Field(default="", max_length=80)
-    id_number: str = Field(default="", max_length=64)
+    id_number: str | None = Field(default=None, max_length=64)
     basic_info: dict = Field(default_factory=dict)
 
 
 class CaregiverProfileUpdate(BaseModel):
     real_name: str = Field(default="", max_length=80)
-    id_number: str = Field(default="", max_length=64)
+    id_number: str | None = Field(default=None, max_length=64)
     bio: str = Field(default="", max_length=2000)
     is_available: bool = True
     experience_years: int = Field(default=0, ge=0, le=80)
@@ -47,6 +56,11 @@ class CertificationCreate(BaseModel):
 class CertificationReview(BaseModel):
     review_status: str = Field(pattern="^(pending|approved|rejected)$")
     review_note: str = Field(default="", max_length=1000)
+
+
+class IdentityReview(BaseModel):
+    approved: bool
+    evidence_reference: str = Field(min_length=5, max_length=200)
 
 
 class UserRoleRead(BaseModel):

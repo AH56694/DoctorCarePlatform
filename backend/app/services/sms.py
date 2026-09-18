@@ -64,9 +64,12 @@ class AliyunSmsClient:
         ):
             return SmsSendResult(
                 status="dry_run",
-                detail=f"SMS to {phone} skipped because Aliyun credentials are not configured.",
+                detail="SMS skipped because provider credentials are not configured.",
             )
-        return SmsSendResult(status="sent", provider_message_id="aliyun-placeholder")
+        return SmsSendResult(
+            status="failed",
+            detail="SMS provider adapter is not implemented; no message was sent.",
+        )
 
 
 def build_template_params(scene: str, payload: dict[str, Any] | None = None) -> dict[str, str]:
@@ -119,7 +122,7 @@ class SmsNotificationService:
             **(notification.payload or {}),
             "provider_detail": result.detail,
         }
-        if result.status in {"sent", "dry_run"}:
+        if result.status == "sent":
             notification.sent_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(notification)
@@ -141,7 +144,7 @@ class SmsNotificationService:
             "provider_detail": result.detail,
             "retried_at": datetime.now(timezone.utc).isoformat(),
         }
-        if result.status in {"sent", "dry_run"}:
+        if result.status == "sent":
             notification.sent_at = datetime.now(timezone.utc)
         db.commit()
         db.refresh(notification)

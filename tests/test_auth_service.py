@@ -12,3 +12,9 @@ def test_password_hash_roundtrip():
 def test_empty_or_invalid_hash_fails():
     assert verify_password("secret123", "") is False
     assert verify_password("secret123", "not-a-valid-hash") is False
+
+
+def test_phone_normalization_uses_one_login_and_rate_limit_identity():
+    from backend.app.schemas.accounts import UserLogin
+
+    assert UserLogin(phone=" １３８００００００００ ", password="test").phone == "13800000000"

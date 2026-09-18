@@ -1,10 +1,13 @@
 import json
-from typing import Any
+import logging
+from typing import Annotated, Any
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
+from backend.app.api.deps import get_current_user
 from backend.app.db.models import AiMessage, AiSession, User
 from backend.app.db.session import get_db
 from backend.app.schemas.chat import AiChatRequest, AiChatResponse, AiMessageRead, AiSessionRead
@@ -12,6 +15,7 @@ from backend.app.services.message_cache import message_cache
 from backend.app.services.rag_client import RagServiceClient
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 MAX_ATTACHMENT_CONTEXT_CHARS = 12000
 MAX_ATTACHMENT_ITEM_CHARS = 4000
@@ -19,27 +23,29 @@ MAX_ATTACHMENT_ITEM_CHARS = 4000
 
 @router.get("/sessions", response_model=list[AiSessionRead])
 async def list_sessions(
+    current_user: Annotated[User, Depends(get_current_user)],
     user_id: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
 ) -> list[AiSession]:
-    query = db.query(AiSession)
-    if user_id:
-        query = query.filter(AiSession.user_id == user_id)
+    _require_own_user_id(user_id, current_user)
+    query = db.query(AiSession).filter(AiSession.user_id == current_user.id)
     return query.order_by(AiSession.updated_at.desc(), AiSession.created_at.desc()).limit(limit).all()
 
 
 @router.get("/sessions/{session_id}/messages", response_model=list[AiMessageRead])
 async def list_session_messages(
     session_id: str,
+    current_user: Annotated[User, Depends(get_current_user)],
     user_id: str | None = Query(default=None),
     limit: int = Query(default=200, ge=1, le=500),
     db: Session = Depends(get_db),
 ) -> list[AiMessage]:
+    _require_own_user_id(user_id, current_user)
     session = db.query(AiSession).filter(AiSession.id == session_id).first()
     if not session:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="AI session not found")
-    if user_id and session.user_id and session.user_id != user_id:
+    if session.user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the owner can read this AI session")
     return (
         db.query(AiMessage)
@@ -51,19 +57,37 @@ async def list_session_messages(
 
 
 @router.post("/chat", response_model=AiChatResponse)
-async def chat(payload: AiChatRequest, db: Session = Depends(get_db)) -> AiChatResponse:
+async def chat(
+    payload: AiChatRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> AiChatResponse:
+    payload = _authenticated_payload(payload, current_user)
     session = _prepare_ai_session(db, payload)
     effective_payload = payload.model_copy(update={"conversation_id": str(session.id)})
     ai_payload = effective_payload.model_copy(update={"message": _message_with_attachments(effective_payload)})
-    response = await RagServiceClient().chat(ai_payload)
+    try:
+        response = await RagServiceClient().chat(ai_payload)
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail="问诊服务响应超时，请稍后重试。") from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail="问诊服务暂不可用，请稍后重试。") from exc
     _persist_ai_messages(db, effective_payload, response, session=session)
     return response.model_copy(update={"session_id": session.id})
 
 
 @router.post("/chat/stream")
-async def chat_stream(payload: AiChatRequest, db: Session = Depends(get_db)) -> StreamingResponse:
+async def chat_stream(
+    payload: AiChatRequest,
+    current_user: Annotated[User, Depends(get_current_user)],
+    db: Session = Depends(get_db),
+) -> StreamingResponse:
+    payload = _authenticated_payload(payload, current_user)
     session = _prepare_ai_session(db, payload)
     effective_payload = payload.model_copy(update={"conversation_id": str(session.id)})
+    # The request dependency may close before SSE finishes. Open a short, separate
+    # transaction only after the upstream response is complete.
+    bind = db.get_bind()
 
     async def event_stream():
         client = RagServiceClient()
@@ -83,6 +107,8 @@ async def chat_stream(payload: AiChatRequest, db: Session = Depends(get_db)) -> 
 
         try:
             async for event in client.stream_chat_events(ai_payload):
+                if event.get("type") == "error":
+                    raise RuntimeError("Upstream AI stream reported failure")
                 for normalized in _normalize_stream_event(event, stream_state, client):
                     yield _sse(normalized)
 
@@ -91,11 +117,13 @@ async def chat_stream(payload: AiChatRequest, db: Session = Depends(get_db)) -> 
                 await _hydrate_final_run_state(client, str(run_id), stream_state)
 
             response = _response_from_stream_state(client, stream_state)
-            persisted_session = _persist_ai_messages(db, effective_payload, response, session=session)
-            final_response = response.model_copy(update={"session_id": persisted_session.id})
+            with Session(bind=bind, expire_on_commit=False) as stream_db:
+                persisted_session = _persist_ai_messages(stream_db, effective_payload, response)
+                final_response = response.model_copy(update={"session_id": persisted_session.id})
             yield _sse({"type": "final", "response": final_response.model_dump()})
         except Exception as exc:
-            yield _sse({"type": "error", "message": f"问诊流式响应失败：{exc}"})
+            logger.warning("AI stream failed: %s", type(exc).__name__)
+            yield _sse({"type": "error", "message": "问诊服务暂不可用，请稍后重试。"})
 
     return StreamingResponse(
         event_stream(),
@@ -106,6 +134,19 @@ async def chat_stream(payload: AiChatRequest, db: Session = Depends(get_db)) -> 
             "X-Accel-Buffering": "no",
         },
     )
+
+
+def _require_own_user_id(user_id: str | None, current_user: User) -> None:
+    if user_id is not None and user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="user_id must match the authenticated user")
+
+
+def _authenticated_payload(payload: AiChatRequest, current_user: User) -> AiChatRequest:
+    _require_own_user_id(payload.user_id, current_user)
+    is_admin = current_user.active_role == "admin" and any(
+        role.role == "admin" for role in current_user.roles
+    )
+    return payload.model_copy(update={"user_id": current_user.id, "is_admin": is_admin})
 
 
 def _message_with_attachments(payload: AiChatRequest) -> str:
@@ -197,9 +238,8 @@ def _normalize_stream_event(
             output.append({"type": "sources", "sources": sources})
     elif event_type == "sources":
         sources = client._normalize_sources(event.get("content") or [])
-        if sources:
-            state["sources"] = sources
-            output.append({"type": "sources", "sources": sources})
+        state["sources"] = sources
+        output.append({"type": "sources", "sources": sources})
     elif event_type == "end":
         content = event.get("content")
         if isinstance(content, dict):
@@ -208,7 +248,7 @@ def _normalize_stream_event(
                 state["answer_parts"].append(answer)
                 output.append({"type": "token", "content": answer})
             sources = client._normalize_sources(content.get("sources") or [])
-            if sources:
+            if "sources" in content:
                 state["sources"] = sources
                 output.append({"type": "sources", "sources": sources})
         elif isinstance(content, str) and content and not "".join(state["answer_parts"]).strip():
@@ -348,6 +388,9 @@ def _step_label(step_name: str) -> str:
         "intent_recognition": "识别问诊意图",
         "question_classification": "判断问题类型",
         "clarification": "判断是否需要补充信息",
+        "patient_assessment": "整理问诊信息",
+        "agent_decision": "确定下一步处理",
+        "answer_verification": "核对回答依据",
         "question_rewrite": "改写检索问题",
         "knowledge_search": "检索知识库文件",
         "result_evaluation": "评估检索结果",
@@ -374,7 +417,6 @@ def _prepare_ai_session(db: Session, payload: AiChatRequest) -> AiSession:
     """Persist the session before invoking AI so the first turn has a stable memory key."""
     session = _get_or_create_ai_session(db, payload)
     db.commit()
-    db.refresh(session)
     return session
 
 
@@ -382,7 +424,9 @@ def _get_or_create_ai_session(db: Session, payload: AiChatRequest) -> AiSession:
     session = None
     if payload.conversation_id:
         session = db.query(AiSession).filter(AiSession.id == payload.conversation_id).first()
-        if session and payload.user_id and session.user_id and session.user_id != payload.user_id:
+        if not session:
+            raise HTTPException(status_code=404, detail="AI session not found")
+        if session.user_id != payload.user_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the owner can use this AI session")
     if session is None:
         session_data = {
@@ -392,8 +436,6 @@ def _get_or_create_ai_session(db: Session, payload: AiChatRequest) -> AiSession:
             "risk_flag": "none",
             "metadata_json": {"source": "api.v1.ai.chat"},
         }
-        if payload.conversation_id:
-            session_data["id"] = payload.conversation_id
         session = AiSession(**session_data)
         db.add(session)
         db.flush()

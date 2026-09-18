@@ -41,7 +41,7 @@ class AdminCopilotAgent:  # 定义管理助手 Agent 类
         Returns:
             包含answer和sources的字典
         """
-        logger.info(f"[AdminCopilotAgent] Processing admin request: {question[:50]}...")
+        logger.info("AI request processing; content omitted")
 
         try:
             operation = self._parse_operation(question)  # 解析问题中的操作类型
@@ -63,7 +63,7 @@ class AdminCopilotAgent:  # 定义管理助手 Agent 类
                      user_id: Optional[str] = None, context: str = "",
                      **kwargs) -> Generator[str, None, None]:  # 流式处理管理助手请求
         """流式处理管理助手请求"""
-        logger.info(f"[AdminCopilotAgent] Stream admin request: {question[:50]}...")
+        logger.info("AI request processing; content omitted")
 
         try:
             operation = self._parse_operation(question)  # 解析操作类型

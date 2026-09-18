@@ -1,0 +1,112 @@
+name: Quality gates
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  local-scripts:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify local process ownership and secret handling
+        shell: powershell
+        run: .\scripts\tests\test-local-processes.ps1
+
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: backend
+            lock: requirements.lock
+            tests: tests
+          - service: ai
+            lock: python-service/requirements.lock
+            tests: python-service/tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: |
+            requirements.lock
+            python-service/requirements.lock
+            requirements-dev.txt
+      - run: python -m pip install --require-hashes -r ${{ matrix.lock }}
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m ruff check backend python-service tests --select E9,F63,F7,F82
+      - run: python -m pytest ${{ matrix.tests }} -q --junitxml=test-results.xml
+        env:
+          HF_HUB_OFFLINE: '1'
+          TRANSFORMERS_OFFLINE: '1'
+          APP_ENV: test
+      - run: python scripts/audit-dependencies.py ${{ matrix.lock }} --output dependency-audit.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tests-${{ matrix.service }}
+          path: |
+            test-results.xml
+            dependency-audit.json
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: npm audit --audit-level=high --registry=https://registry.npmjs.org
+
+  mysql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_ROOT_PASSWORD: ci-only-password
+          MYSQL_DATABASE: doctorcare_ci
+        ports: ['3306:3306']
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pci-only-password --silent"
+          --health-interval=10s --health-timeout=5s --health-retries=12
+    env:
+      DATABASE_URL: mysql+pymysql://root:ci-only-password@127.0.0.1:3306/doctorcare_ci
+      TEST_MYSQL_URL: mysql+pymysql://root:ci-only-password@127.0.0.1:3306/doctorcare_ci
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements.lock
+      - run: python -m pip install --require-hashes -r requirements.lock
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m alembic -c alembic.mysql.ini upgrade head
+      - run: python -m alembic -c alembic.mysql.ini upgrade head
+      - run: python -m pytest tests/test_mysql_integration.py -q
+      - run: docker compose config --quiet

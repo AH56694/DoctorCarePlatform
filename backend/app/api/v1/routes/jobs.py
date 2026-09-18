@@ -248,7 +248,7 @@ async def _notify_user(db: Session, *, user_id: str, scene: str, payload: dict) 
 
 
 @router.post("", response_model=JobPostingRead, status_code=status.HTTP_201_CREATED)
-async def create_job(
+def create_job(
     payload: JobPostingCreate,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
@@ -273,7 +273,7 @@ async def create_job(
 
 
 @router.get("", response_model=list[JobPostingRead])
-async def list_jobs(
+def list_jobs(
     current_user: Annotated[User, Depends(get_current_user)],
     status_filter: str | None = Query(default=None, alias="status"),
     city: str | None = None,
@@ -304,7 +304,7 @@ async def list_jobs(
 
 
 @router.get("/caregivers/{caregiver_id}/applications", response_model=list[ApplicationRead])
-async def list_caregiver_applications(
+def list_caregiver_applications(
     caregiver_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
@@ -383,7 +383,7 @@ async def review_application(
 
 
 @router.get("/caregivers/available", response_model=list[AvailableCaregiverRead])
-async def list_available_caregivers(
+def list_available_caregivers(
     current_user: Annotated[User, Depends(get_current_user)],
     city: str | None = None,
     keyword: str | None = None,
@@ -568,7 +568,7 @@ async def create_invitation(
 
 
 @router.get("/invitations", response_model=list[InvitationRead])
-async def list_invitations(
+def list_invitations(
     current_user: Annotated[User, Depends(get_current_user)],
     patient_id: str | None = None,
     caregiver_id: str | None = None,
@@ -662,7 +662,7 @@ async def respond_invitation(
 
 
 @router.get("/{job_id}", response_model=JobPostingRead)
-async def get_job(
+def get_job(
     job_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
@@ -678,7 +678,7 @@ async def get_job(
 
 
 @router.patch("/{job_id}/status", response_model=JobPostingRead)
-async def update_job_status(
+def update_job_status(
     job_id: str,
     payload: JobStatusUpdate,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -802,7 +802,7 @@ async def apply_job(
 
 
 @router.get("/{job_id}/applications", response_model=list[ApplicationRead])
-async def list_job_applications(
+def list_job_applications(
     job_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),

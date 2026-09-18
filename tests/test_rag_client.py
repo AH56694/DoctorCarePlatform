@@ -1,6 +1,10 @@
 import asyncio
 from typing import Any
 
+import httpx
+import pytest
+
+from backend.app.core.config import settings
 from backend.app.schemas.chat import AiChatRequest
 from backend.app.services.rag_client import RagServiceClient
 
@@ -9,6 +13,15 @@ def test_rag_task_type_maps_to_medical_consult() -> None:
     intent = RagServiceClient()._intent_from_task_type("knowledge_qa")
     assert intent.category == "medical_consult"
     assert intent.subcategory == "rag_knowledge_qa"
+
+
+def test_failed_agent_run_is_not_presented_as_successful_answer(monkeypatch):
+    async def failed(self, payload):
+        return {"answer": "失败", "status": "failed", "error": True}
+
+    monkeypatch.setattr(RagServiceClient, "_run_agent", failed)
+    with pytest.raises(httpx.RequestError):
+        asyncio.run(RagServiceClient().chat(AiChatRequest(message="问题")))
 
 
 def test_rag_sources_are_normalized() -> None:
@@ -74,3 +87,60 @@ def test_agent_payload_forwards_explicit_context() -> None:
 
     assert payload["conversation_id"] == "session-1"
     assert payload["context"] == "患者上一轮描述了术后疼痛。"
+
+
+def test_every_internal_request_sends_service_authentication(monkeypatch):
+    requests = []
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(settings, "rag_service_token", "test-internal-token")
+
+    def respond(request):
+        requests.append(request)
+        assert request.headers["X-Service-Token"] == "test-internal-token"
+        if request.url.path.endswith("/stream"):
+            return httpx.Response(200, text='data: {"type":"token","content":"ok"}\n\n')
+        return httpx.Response(200, json={"tool_calls": []})
+
+    monkeypatch.setattr(
+        httpx, "AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs),
+    )
+
+    async def exercise():
+        client = RagServiceClient("http://internal.test")
+        await client._post("/api/agent/run", {}, 30)
+        await client.get_run_status("run-1")
+        await client.get_run_tool_calls("run-1")
+        await client.ingest_knowledge({})
+        await client.delete_knowledge(1)
+        events = [item async for item in client.stream_chat_events(AiChatRequest(message="hello"))]
+        assert events == [{"type": "token", "content": "ok"}]
+
+    asyncio.run(exercise())
+    assert len(requests) == 6
+
+
+def test_stream_has_total_deadline_even_if_upstream_keeps_sending(monkeypatch):
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(settings, "rag_stream_timeout_seconds", 0.05)
+
+    class EndlessStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            while True:
+                await asyncio.sleep(0.005)
+                yield b'data: {"type":"token","content":"x"}\n\n'
+
+    def respond(request):
+        return httpx.Response(200, stream=EndlessStream())
+
+    monkeypatch.setattr(
+        httpx, "AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(respond), **kwargs),
+    )
+
+    async def consume():
+        async for _ in RagServiceClient().stream_chat_events(AiChatRequest(message="hello")):
+            pass
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(consume())

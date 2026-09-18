@@ -3,7 +3,7 @@ import secrets
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from jose import JWTError, jwt
+import jwt
 
 from backend.app.core.config import settings
 
@@ -67,8 +67,9 @@ def decode_access_token(token: str) -> str | None:
             settings.auth_secret_key,
             algorithms=[JWT_ALGORITHM],
             issuer=settings.auth_issuer,
+            options={"require": ["exp", "iat", "sub", "jti"]},
         )
-    except JWTError:
+    except jwt.InvalidTokenError:
         return None
     if payload.get("type") != "access":
         return None

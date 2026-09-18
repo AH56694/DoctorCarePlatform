@@ -7,18 +7,20 @@ services:
     depends_on:
       - backend
     ports:
-      - "3000:80"
+      - "127.0.0.1:3000:80"
 
   backend:
     build:
       context: .
-    dockerfile: backend/Dockerfile
+      dockerfile: backend/Dockerfile
     environment:
       APP_ENV: ${APP_ENV:-development}
       PROJECT_NAME: ${PROJECT_NAME:-DoctorCarePlatform}
-      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-development-only-change-me}
+      AUTH_SECRET_KEY: ${AUTH_SECRET_KEY:-development-only-change-me-before-production}
       AUTH_TOKEN_EXPIRE_MINUTES: ${AUTH_TOKEN_EXPIRE_MINUTES:-120}
       AUTH_ISSUER: ${AUTH_ISSUER:-doctor-care-platform}
+      RAG_SERVICE_TOKEN: ${RAG_SERVICE_TOKEN:-development-service-token}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:3000","http://127.0.0.1:3000","http://localhost:5173","http://127.0.0.1:5173"]}
       DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://root:change-me@mysql:3306/doctor_care_platform?charset=utf8mb4}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       RAG_SERVICE_URL: ${RAG_SERVICE_URL:-http://python-service:8300}
@@ -37,7 +39,7 @@ services:
       python-service:
         condition: service_started
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     volumes:
       - ./.local-models:/app/.local-models:ro
 
@@ -46,6 +48,13 @@ services:
       context: .
       dockerfile: python-service/Dockerfile
     environment:
+      AGENT_MAX_SEARCHES: ${AGENT_MAX_SEARCHES:-3}
+      AGENT_MAX_DECISIONS: ${AGENT_MAX_DECISIONS:-6}
+      AGENT_MAX_STEPS: ${AGENT_MAX_STEPS:-24}
+      AGENT_TIMEOUT_SECONDS: ${AGENT_TIMEOUT_SECONDS:-80}
+      AGENT_STEP_TIMEOUT_SECONDS: ${AGENT_STEP_TIMEOUT_SECONDS:-20}
+      APP_ENV: ${APP_ENV:-development}
+      RAG_SERVICE_TOKEN: ${RAG_SERVICE_TOKEN:-development-service-token}
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
       DASHSCOPE_MODEL: ${DASHSCOPE_MODEL:-qwen-plus}
       EMBEDDING_MODEL: ${PYTHON_SERVICE_EMBEDDING_MODEL:-local}
@@ -79,7 +88,7 @@ services:
       mysql:
         condition: service_healthy
     ports:
-      - "8300:8300"
+      - "127.0.0.1:8300:8300"
     volumes:
       - python-service-faiss:/app/faiss_index
 
@@ -90,7 +99,7 @@ services:
       - backend
       - python-service
     ports:
-      - "8080:80"
+      - "127.0.0.1:8080:80"
     volumes:
       - ./infra/nginx.conf:/etc/nginx/nginx.conf:ro
 
@@ -100,7 +109,7 @@ services:
       MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me}
       MYSQL_DATABASE: ${MYSQL_DATABASE:-doctor_care_platform}
     ports:
-      - "3306:3306"
+      - "127.0.0.1:3306:3306"
     volumes:
       - mysql-data:/var/lib/mysql
       - ./infra/mysql/doctor_care_platform_schema.sql:/docker-entrypoint-initdb.d/10-doctor-care-platform.sql:ro
@@ -113,7 +122,7 @@ services:
   redis:
     image: redis:7.2-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
 
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
@@ -122,8 +131,8 @@ services:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - minio-data:/data
 

@@ -123,7 +123,7 @@ def _caregiver_resume_read(db: Session, profile: CaregiverProfile) -> CaregiverR
 
 
 @router.get("/patients/{user_id}", response_model=PatientHomepageRead)
-async def get_patient_homepage(
+def get_patient_homepage(
     user_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
@@ -184,7 +184,7 @@ async def get_patient_homepage(
 
 
 @router.get("/caregivers", response_model=list[CaregiverResumeRead])
-async def list_caregiver_resumes(
+def list_caregiver_resumes(
     current_user: Annotated[User, Depends(get_current_user)],
     city: str | None = None,
     keyword: str | None = None,
@@ -220,7 +220,7 @@ async def list_caregiver_resumes(
 
 
 @router.get("/caregivers/{user_id}", response_model=CaregiverResumeRead)
-async def get_caregiver_resume(
+def get_caregiver_resume(
     user_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     viewer_id: str | None = None,
@@ -282,7 +282,7 @@ async def get_caregiver_resume(
 
 
 @router.patch("/caregivers/{user_id}/availability", response_model=CaregiverResumeRead)
-async def update_caregiver_availability(
+def update_caregiver_availability(
     user_id: str,
     payload: CaregiverAvailabilityUpdate,
     current_user: Annotated[User, Depends(get_current_user)],

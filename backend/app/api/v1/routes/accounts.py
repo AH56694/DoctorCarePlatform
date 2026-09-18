@@ -1,10 +1,10 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session, selectinload
 
 from backend.app.api.deps import get_current_user, require_admin_user
-from backend.app.db.models import CaregiverProfile, Certification, PatientProfile, User, UserRole
+from backend.app.db.models import AdminLog, CaregiverProfile, Certification, PatientProfile, User, UserRole
 from backend.app.db.session import get_db
 from backend.app.schemas.accounts import (
     AccountRead,
@@ -14,6 +14,7 @@ from backend.app.schemas.accounts import (
     CertificationCreate,
     CertificationRead,
     CertificationReview,
+    IdentityReview,
     PatientProfileRead,
     PatientProfileUpdate,
     RoleCreateRequest,
@@ -23,12 +24,14 @@ from backend.app.schemas.accounts import (
     UserRoleRead,
 )
 from backend.app.services.auth import hash_password, issue_access_token, verify_password
+from backend.app.services.rate_limit import auth_rate_limiter
 from backend.app.services.sms import SmsNotificationService
 
 router = APIRouter()
 
 VALID_ROLES = {"patient", "caregiver"}
 VALID_REVIEW_STATUSES = {"pending", "approved", "rejected"}
+DUMMY_PASSWORD_HASH = hash_password("timing-padding-password")
 
 
 def _load_user(db: Session, user_id: str) -> User:
@@ -149,7 +152,7 @@ def _account_read(user: User) -> AccountRead:
 
 
 def _require_self_or_admin(current_user: User, user_id: str) -> None:
-    is_admin = any(role.role == "admin" for role in current_user.roles)
+    is_admin = current_user.active_role == "admin" and any(role.role == "admin" for role in current_user.roles)
     if current_user.id != user_id and not is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -158,7 +161,8 @@ def _require_self_or_admin(current_user: User, user_id: str) -> None:
 
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
-async def register(payload: UserRegister, db: Session = Depends(get_db)) -> AuthResponse:
+def register(payload: UserRegister, request: Request, db: Session = Depends(get_db)) -> AuthResponse:
+    auth_rate_limiter.check(request, payload.phone)
     initial_role = _role_or_400(payload.initial_role)
     if db.query(User).filter(User.phone == payload.phone).first():
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Phone already registered")
@@ -182,9 +186,11 @@ async def register(payload: UserRegister, db: Session = Depends(get_db)) -> Auth
 
 
 @router.post("/login", response_model=AuthResponse)
-async def login(payload: UserLogin, db: Session = Depends(get_db)) -> AuthResponse:
+def login(payload: UserLogin, request: Request, db: Session = Depends(get_db)) -> AuthResponse:
+    auth_rate_limiter.check(request, payload.phone)
     user = db.query(User).filter(User.phone == payload.phone).first()
-    if not user or not verify_password(payload.password, user.password_hash):
+    valid_password = verify_password(payload.password, user.password_hash if user else DUMMY_PASSWORD_HASH)
+    if not user or not valid_password:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid phone or password")
     if user.status != "active":
         raise HTTPException(
@@ -196,7 +202,7 @@ async def login(payload: UserLogin, db: Session = Depends(get_db)) -> AuthRespon
 
 
 @router.get("/{user_id}/identity", response_model=AccountRead)
-async def get_identity(
+def get_identity(
     user_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
@@ -206,7 +212,7 @@ async def get_identity(
 
 
 @router.post("/{user_id}/roles", response_model=AccountRead)
-async def create_role(
+def create_role(
     user_id: str,
     payload: RoleCreateRequest,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -225,7 +231,7 @@ async def create_role(
 
 
 @router.post("/{user_id}/roles/switch", response_model=AccountRead)
-async def switch_role(
+def switch_role(
     user_id: str,
     payload: RoleSwitchRequest,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -239,7 +245,7 @@ async def switch_role(
 
 
 @router.put("/{user_id}/profiles/patient", response_model=AccountRead)
-async def upsert_patient_profile(
+def upsert_patient_profile(
     user_id: str,
     payload: PatientProfileUpdate,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -249,18 +255,15 @@ async def upsert_patient_profile(
     user = _load_user(db, user_id)
     _ensure_role(db, user, "patient")
     profile = user.patient_profile or PatientProfile(user_id=user.id)
-    profile.real_name = payload.real_name
-    profile.id_number = payload.id_number
+    _update_identity(profile, user, "patient", payload.real_name, payload.id_number)
     profile.basic_info = payload.basic_info
-    profile.id_verified = bool(payload.real_name and payload.id_number)
-    profile.verification_status = "approved" if profile.id_verified else "pending"
     db.add(profile)
     db.commit()
     return _account_read(_load_user(db, user.id))
 
 
 @router.put("/{user_id}/profiles/caregiver", response_model=AccountRead)
-async def upsert_caregiver_profile(
+def upsert_caregiver_profile(
     user_id: str,
     payload: CaregiverProfileUpdate,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -270,21 +273,18 @@ async def upsert_caregiver_profile(
     user = _load_user(db, user_id)
     _ensure_role(db, user, "caregiver")
     profile = user.caregiver_profile or CaregiverProfile(user_id=user.id)
-    profile.real_name = payload.real_name
-    profile.id_number = payload.id_number
+    _update_identity(profile, user, "caregiver", payload.real_name, payload.id_number)
     profile.bio = payload.bio
     profile.is_available = payload.is_available
     profile.experience_years = payload.experience_years
     profile.service_city = payload.service_city
-    profile.id_verified = bool(payload.real_name and payload.id_number)
-    profile.verification_status = "pending"
     db.add(profile)
     db.commit()
     return _account_read(_load_user(db, user.id))
 
 
 @router.post("/{user_id}/certifications", response_model=CertificationRead, status_code=status.HTTP_201_CREATED)
-async def submit_certification(
+def submit_certification(
     user_id: str,
     payload: CertificationCreate,
     current_user: Annotated[User, Depends(get_current_user)],
@@ -331,10 +331,14 @@ async def review_certification(
     caregiver = certification.caregiver_profile
     if caregiver:
         caregiver.verification_status = certification.review_status
-        caregiver.id_verified = certification.review_status == "approved"
         role = next((item for item in caregiver.user.roles if item.role == "caregiver"), None)
         if role:
             role.verification_status = certification.review_status
+    db.add(AdminLog(
+        admin_id=current_user.id, action="certification.review", target_type="certification",
+        target_id=certification.id,
+        detail={"new_status": certification.review_status, "note": payload.review_note},
+    ))
     db.commit()
     if caregiver and caregiver.user.phone:
         await SmsNotificationService().create_and_send(
@@ -357,3 +361,49 @@ async def review_certification(
         review_status=certification.review_status,
         review_note=certification.review_note,
     )
+
+
+def _update_identity(profile, user: User, role_name: str, real_name: str, id_number: str | None):
+    changed = profile.real_name != real_name or (
+        id_number is not None and profile.id_number != id_number
+    )
+    profile.real_name = real_name
+    if id_number is not None:
+        profile.id_number = id_number
+    if changed:
+        profile.id_verified = False
+        profile.verification_status = "pending"
+        for role in user.roles:
+            if role.role == role_name:
+                role.verification_status = "pending"
+
+
+@router.post("/{user_id}/profiles/{profile_role}/identity-review", response_model=AccountRead)
+def review_identity(
+    user_id: str,
+    profile_role: str,
+    payload: IdentityReview,
+    current_user: Annotated[User, Depends(require_admin_user)],
+    db: Session = Depends(get_db),
+) -> AccountRead:
+    role_name = _role_or_400(profile_role)
+    user = _load_user(db, user_id)
+    profile = user.patient_profile if role_name == "patient" else user.caregiver_profile
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    if payload.approved and not (profile.real_name and profile.id_number):
+        raise HTTPException(status_code=400, detail="Identity information is incomplete")
+    profile.id_verified = payload.approved
+    if role_name == "patient" or not payload.approved:
+        profile.verification_status = "approved" if payload.approved else "rejected"
+        for role in user.roles:
+            if role.role == role_name:
+                role.verification_status = profile.verification_status
+    # Credential approval and identity verification are separate checks for caregivers.
+    db.add(AdminLog(
+        admin_id=current_user.id, action="identity.review", target_type=f"{role_name}_profile",
+        target_id=profile.id,
+        detail={"approved": payload.approved, "evidence_reference": payload.evidence_reference},
+    ))
+    db.commit()
+    return _account_read(_load_user(db, user.id))

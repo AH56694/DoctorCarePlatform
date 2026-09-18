@@ -56,7 +56,7 @@ class KnowledgeQAAgent:  # 定义知识问答 Agent 类
         L2 标准：问题改写+检索+重排序+生成（15%请求，~5-8s）
         L3 推理：分解+逐个推理+汇总（5%请求，~10-15s，由 RouterAgent 处理）
         """
-        logger.info(f"[KnowledgeQAAgent] Processing question: {question[:50]}...")  # 记录处理日志，截取前50字符
+        logger.info("AI request processing; content omitted")
 
         try:
             # 1. 读取会话记忆作为上下文
@@ -184,7 +184,7 @@ class KnowledgeQAAgent:  # 定义知识问答 Agent 类
     def _ask_l3(self, question: str, conversation_id: Optional[str],
                 full_context: str) -> Dict[str, Any]:
         """L3 推理链路：分解子问题+逐个检索推理+汇总"""
-        logger.info(f"[KnowledgeQAAgent] L3 reasoning for: {question[:50]}...")
+        logger.info("AI request processing; content omitted")
 
         try:
             # 委托给 ReasoningAgent 执行分解→检索→推理→汇总
@@ -302,7 +302,7 @@ class KnowledgeQAAgent:  # 定义知识问答 Agent 类
 
         直接走：向量检索 → LLM流式生成 → 返回
         """
-        logger.info(f"[KnowledgeQAAgent] Stream processing question: {question[:50]}...")
+        logger.info("AI request processing; content omitted")
 
         try:
             # 1. 直接向量检索

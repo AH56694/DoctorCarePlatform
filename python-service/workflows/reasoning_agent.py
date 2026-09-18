@@ -18,7 +18,7 @@ class ReasoningAgent:  # 定义推理 Agent 类（处理复杂问题的分步推
     def reason(self, question: str, context: str = "",  # reason 方法：执行推理流程
                conversation_id: str = None) -> Dict[str, Any]:  # conversation_id 类型提示为 str（未用 Optional，但默认 None 也可）
         """执行推理流程：分解 → 逐个检索+推理 → 汇总"""
-        logger.info(f"[ReasoningAgent] Starting reasoning for: {question[:50]}...")
+        logger.info("AI request processing; content omitted")
 
         try:
             # Step 1：问题分解
