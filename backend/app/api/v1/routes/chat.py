@@ -22,7 +22,7 @@ MAX_ATTACHMENT_ITEM_CHARS = 4000
 
 
 @router.get("/sessions", response_model=list[AiSessionRead])
-async def list_sessions(
+def list_sessions(
     current_user: Annotated[User, Depends(get_current_user)],
     user_id: str | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=200),
@@ -34,7 +34,7 @@ async def list_sessions(
 
 
 @router.get("/sessions/{session_id}/messages", response_model=list[AiMessageRead])
-async def list_session_messages(
+def list_session_messages(
     session_id: str,
     current_user: Annotated[User, Depends(get_current_user)],
     user_id: str | None = Query(default=None),
