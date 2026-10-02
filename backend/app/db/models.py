@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Boolean,
     DateTime,
     Float,
@@ -201,6 +202,11 @@ class Invitation(Base, TimestampMixin):
 
 class Conversation(Base, TimestampMixin):
     __tablename__ = "conversations"
+    __table_args__ = (
+        UniqueConstraint("conversation_key", name="uq_conversations_key"),
+        Index("ix_conversations_a_activity", "participant_a", "last_message_at", "id"),
+        Index("ix_conversations_b_activity", "participant_b", "last_message_at", "id"),
+    )
 
     id: Mapped[str] = mapped_column(uuid_type(), primary_key=True, default=lambda: str(uuid4()))
     owner_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
@@ -210,10 +216,30 @@ class Conversation(Base, TimestampMixin):
     source_type: Mapped[str] = mapped_column(String(32), default="")
     source_id: Mapped[str | None] = mapped_column(uuid_type(), nullable=True)
     title: Mapped[str] = mapped_column(String(160), default="")
+    conversation_key: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_seq: Mapped[int] = mapped_column(BigInteger, default=0, server_default="0")
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ConversationAlias(Base):
+    """Keep links to conversations combined by the chat data migration usable."""
+
+    __tablename__ = "conversation_aliases"
+
+    alias_id: Mapped[str] = mapped_column(uuid_type(), primary_key=True)
+    canonical_id: Mapped[str] = mapped_column(
+        ForeignKey("conversations.id", ondelete="CASCADE"), index=True,
+    )
 
 
 class Message(Base, TimestampMixin):
     __tablename__ = "messages"
+    __table_args__ = (
+        UniqueConstraint(
+            "conversation_id", "sender_id", "client_message_id", name="uq_messages_client_id",
+        ),
+        UniqueConstraint("conversation_id", "seq", name="uq_messages_conversation_seq"),
+    )
 
     id: Mapped[str] = mapped_column(uuid_type(), primary_key=True, default=lambda: str(uuid4()))
     conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id", ondelete="CASCADE"))
@@ -223,6 +249,8 @@ class Message(Base, TimestampMixin):
     content: Mapped[str] = mapped_column(Text, default="")
     attachment_url: Mapped[str] = mapped_column(String(500), default="")
     attachment_type: Mapped[str] = mapped_column(String(64), default="")
+    client_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    seq: Mapped[int] = mapped_column(BigInteger)
 
 
 class AiSession(Base, TimestampMixin):

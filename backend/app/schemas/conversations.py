@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -24,10 +25,20 @@ class ConversationRead(BaseModel):
     title: str = ""
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    last_seq: int = 0
+    last_message_at: datetime | None = None
 
 
 class MessageCreate(BaseModel):
     sender_id: str
+    client_message_id: UUID | None = None
+    body: str = Field(min_length=1, max_length=4000)
+    attachment_url: str = Field(default="", max_length=500)
+    attachment_type: str = Field(default="", max_length=64)
+
+
+class MessageCreateV2(BaseModel):
+    client_message_id: UUID
     body: str = Field(min_length=1, max_length=4000)
     attachment_url: str = Field(default="", max_length=500)
     attachment_type: str = Field(default="", max_length=64)
@@ -45,3 +56,19 @@ class MessageRead(BaseModel):
     attachment_url: str = ""
     attachment_type: str = ""
     created_at: datetime | None = None
+    seq: int
+    client_message_id: str | None = None
+
+
+class MessagePage(BaseModel):
+    conversation_id: str
+    items: list[MessageRead]
+    older_cursor: str | None = None
+    sync_cursor: str
+    has_more: bool
+
+
+class ConversationPage(BaseModel):
+    items: list[ConversationRead]
+    next_cursor: str | None = None
+    has_more: bool

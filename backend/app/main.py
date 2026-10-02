@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from backend.app.api.v1.router import api_router
+from backend.app.api.v2.conversations import router as care_chat_v2_router
 from backend.app.core.config import settings
 from backend.app.core.http import RequestContextMiddleware, configure_http_logging, logger
 from backend.app.db.models import Base
@@ -92,6 +93,7 @@ def create_app() -> FastAPI:
         Base.metadata.create_all(bind=engine)
 
     app.include_router(api_router, prefix="/api/v1")
+    app.include_router(care_chat_v2_router, prefix="/api/v2")
     return app
 
 

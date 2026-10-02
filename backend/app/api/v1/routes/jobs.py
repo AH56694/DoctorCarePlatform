@@ -35,6 +35,7 @@ from backend.app.schemas.jobs import (
     MatchResult,
 )
 from backend.app.services.sms import SmsNotificationService
+from backend.app.services.care_chat import get_or_create_conversation
 
 router = APIRouter()
 
@@ -209,22 +210,16 @@ def _create_match_conversation(
     source_type: str,
     source_id: str,
 ) -> Conversation:
-    existing = _find_existing_conversation(db, source_type, source_id)
-    if existing:
-        return existing
-
     patient = _get_user(db, patient_id)
     caregiver = _get_user(db, caregiver_id)
-    conversation = Conversation(
-        owner_id=patient_id,
-        participant_a=patient_id,
-        participant_b=caregiver_id,
-        kind="care_chat",
+    conversation, _ = get_or_create_conversation(
+        db, owner_id=patient.id,
+        participant_a=patient.id,
+        participant_b=caregiver.id,
         source_type=source_type,
         source_id=source_id,
         title=_conversation_title(patient, caregiver),
     )
-    db.add(conversation)
     return conversation
 
 

@@ -64,10 +64,14 @@ test("API credentials are restricted to this site's API and redirects fail", asy
     return new Response("{}", { status: 200 });
   };
   await assert.rejects(apiFetch("https://other.test/api/v1/accounts"));
+  await assert.rejects(apiFetch("https://other.test/api/v2/conversations"));
   await assert.rejects(apiFetch("/other-page"));
+  await assert.rejects(apiFetch("/api/v3/conversations"));
   assert.equal(calls, 0);
   await apiFetch("/api/v1/ai/sessions");
   assert.equal(calls, 1);
+  await apiFetch("/api/v2/conversations");
+  assert.equal(calls, 2);
 });
 
 test("expired token clears UI session; old responses cannot clear a new login", async () => {

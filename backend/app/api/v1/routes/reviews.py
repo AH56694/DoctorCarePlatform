@@ -9,6 +9,7 @@ from backend.app.db.models import CaregiverProfile, Conversation, Review, User
 from backend.app.db.session import get_db
 from backend.app.schemas.reviews import ReviewCreate, ReviewRead, ReviewUpdate, TrustSummaryRead
 from backend.app.services.sms import SmsNotificationService
+from backend.app.services.care_chat import resolve_conversation
 
 router = APIRouter()
 
@@ -28,12 +29,7 @@ def _get_review(db: Session, review_id: str) -> Review:
 
 
 def _get_conversation(db: Session, conversation_id: str) -> Conversation:
-    conversation = db.query(Conversation).filter(Conversation.id == conversation_id).first()
-    if not conversation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
-    if conversation.kind != "care_chat":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only care chat conversations can be reviewed")
-    return conversation
+    return resolve_conversation(db, conversation_id)
 
 
 def _validate_review_pair(conversation: Conversation, reviewer_id: str, reviewee_id: str) -> None:
@@ -113,6 +109,7 @@ async def create_review(
     _get_user(db, payload.reviewer_id)
     _get_user(db, payload.reviewee_id)
     conversation = _get_conversation(db, payload.conversation_id)
+    payload.conversation_id = conversation.id
     _validate_review_pair(conversation, payload.reviewer_id, payload.reviewee_id)
 
     existing = (
@@ -146,7 +143,7 @@ def list_reviews(
         conversation = _get_conversation(db, conversation_id)
         if current_user.id not in {conversation.participant_a, conversation.participant_b}:
             raise HTTPException(status_code=403, detail="Only participants can view conversation reviews")
-        query = query.filter(Review.conversation_id == conversation_id)
+        query = query.filter(Review.conversation_id == conversation.id)
     if user_id:
         query = query.filter(Review.reviewee_id == user_id)
     if reviewer_id:
@@ -177,7 +174,7 @@ def list_conversation_reviews(
         )
     return (
         db.query(Review)
-        .filter(Review.conversation_id == conversation_id)
+        .filter(Review.conversation_id == conversation.id)
         .order_by(Review.created_at.desc())
         .all()
     )

@@ -31,4 +31,4 @@ def test_production_rejects_unsafe_configuration(overrides, match):
 
 def test_production_settings_and_migration_head():
     production_settings().validate_production()
-    assert expected_database_heads() == {"20260905_mysql_0001"}
+    assert expected_database_heads() == {"20261002_mysql_0002"}

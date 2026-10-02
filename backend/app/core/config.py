@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     auth_rate_limit_window_seconds: int = Field(default=300, ge=10, le=3600)
     db_pool_size: int = Field(default=10, ge=1, le=100)
     db_max_overflow: int = Field(default=10, ge=0, le=100)
+    care_chat_legacy_send_enabled: bool = True
+    care_chat_cache_enabled: bool = True
+    care_chat_read_concurrency: int = Field(default=8, ge=1, le=100)
+    care_chat_send_concurrency: int = Field(default=8, ge=1, le=100)
+    care_chat_send_rate: int = Field(default=5, ge=1, le=100)
+    care_chat_send_burst: int = Field(default=10, ge=1, le=200)
     recruitment_model_path: str = ".local-models/recruitment_recommender.pt"
     recruitment_exploration_rate: float = Field(default=0.08, ge=0, le=0.3)
 

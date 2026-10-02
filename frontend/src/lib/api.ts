@@ -3,7 +3,7 @@ import { clearCurrentSession, loadCurrentSession, sessionExpiredEvent } from "./
 export async function apiFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const original = input instanceof Request ? input : undefined;
   const url = new URL(original?.url ?? String(input), window.location.origin);
-  if (url.origin !== window.location.origin || !url.pathname.startsWith("/api/v1/")) {
+  if (url.origin !== window.location.origin || !/^\/api\/v[12]\//.test(url.pathname)) {
     throw new Error("接口地址必须属于当前站点。");
   }
   const headers = new Headers(init?.headers ?? original?.headers);

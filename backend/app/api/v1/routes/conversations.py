@@ -5,6 +5,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from backend.app.api.deps import get_current_user
+from backend.app.core.config import settings
 from backend.app.db.models import (
     Application,
     CaregiverProfile,
@@ -23,7 +24,8 @@ from backend.app.schemas.conversations import (
     MessageCreate,
     MessageRead,
 )
-from backend.app.services.message_cache import message_cache
+from backend.app.services.care_chat import get_or_create_conversation, resolve_conversation, send_message
+from backend.app.services.care_chat_admission import admitted, check_send_rate, send_slots
 
 router = APIRouter()
 
@@ -36,10 +38,7 @@ def _get_user(db: Session, user_id: str) -> User:
 
 
 def _get_conversation(db: Session, conversation_id: str) -> Conversation:
-    conversation = db.query(Conversation).filter(Conversation.id == conversation_id).first()
-    if not conversation:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
-    return conversation
+    return resolve_conversation(db, conversation_id)
 
 
 def _is_participant(conversation: Conversation, user_id: str) -> bool:
@@ -169,6 +168,10 @@ def _is_approved_caregiver(db: Session, user_id: str) -> bool:
 
 
 def _validate_source_participants(db: Session, payload: ConversationCreate) -> None:
+    if payload.source_type not in {"", "profile", "job", "application", "invitation"}:
+        raise HTTPException(400, "Unsupported conversation source")
+    if payload.source_type in {"job", "application", "invitation"} and not payload.source_id:
+        raise HTTPException(400, "A business source ID is required")
     participants = {payload.participant_a, payload.participant_b}
     if payload.source_type == "job" and payload.source_id:
         job = db.query(JobPosting).filter(JobPosting.id == payload.source_id).first()
@@ -191,6 +194,7 @@ def _validate_source_participants(db: Session, payload: ConversationCreate) -> N
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Conversation participants do not match the job",
             )
+        payload.source_id = job.id
     if payload.source_type == "application" and payload.source_id:
         application = (
             db.query(Application)
@@ -209,6 +213,7 @@ def _validate_source_participants(db: Session, payload: ConversationCreate) -> N
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Conversation participants do not match the application",
             )
+        payload.source_id = application.id
     if payload.source_type == "invitation" and payload.source_id:
         invitation = (
             db.query(Invitation)
@@ -225,6 +230,7 @@ def _validate_source_participants(db: Session, payload: ConversationCreate) -> N
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Conversation participants do not match the invitation",
             )
+        payload.source_id = invitation.id
 
 
 @router.post("", response_model=ConversationRead, status_code=status.HTTP_201_CREATED)
@@ -240,34 +246,22 @@ def create_conversation(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="participant_a must be the authenticated user",
         )
-    _get_user(db, payload.participant_a)
-    _get_user(db, payload.participant_b)
+    payload.participant_a = _get_user(db, payload.participant_a).id
+    payload.participant_b = _get_user(db, payload.participant_b).id
     _validate_source_participants(db, payload)
 
-    query = db.query(Conversation).filter(
-        Conversation.kind == "care_chat",
-        Conversation.participant_a.in_([payload.participant_a, payload.participant_b]),
-        Conversation.participant_b.in_([payload.participant_a, payload.participant_b]),
-    )
-    if payload.source_type and payload.source_id:
-        query = query.filter(Conversation.source_type == payload.source_type, Conversation.source_id == payload.source_id)
-    existing = query.first()
-    if existing:
-        return existing
-
-    conversation = Conversation(
+    conversation, created = get_or_create_conversation(
+        db,
         owner_id=payload.participant_a,
         participant_a=payload.participant_a,
         participant_b=payload.participant_b,
-        kind="care_chat",
         source_type=payload.source_type,
         source_id=payload.source_id,
         title=payload.title or _default_title(db, payload.participant_a, payload.participant_b),
     )
-    db.add(conversation)
     db.commit()
-    db.refresh(conversation)
-    _record_recruitment_chat(db, payload)
+    if created:
+        _record_recruitment_chat(db, payload)
     return conversation
 
 
@@ -308,8 +302,8 @@ def list_messages(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only participants can read messages")
     return (
         db.query(Message)
-        .filter(Message.conversation_id == conversation_id)
-        .order_by(Message.created_at.asc())
+        .filter(Message.conversation_id == conversation.id)
+        .order_by(Message.seq.asc())
         .limit(200)
         .all()
     )
@@ -322,39 +316,20 @@ def create_message(
     current_user: Annotated[User, Depends(get_current_user)],
     db: Session = Depends(get_db),
 ) -> Message:
-    conversation = _get_conversation(db, conversation_id)
+    if not settings.care_chat_legacy_send_enabled:
+        raise HTTPException(410, "Please upgrade to the v2 chat API")
     if payload.sender_id != current_user.id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="sender_id must be the authenticated user",
         )
-    if not _is_participant(conversation, payload.sender_id):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only participants can send messages")
-    message = Message(
-        conversation_id=conversation_id,
-        sender_id=payload.sender_id,
-        sender_type="user",
-        body=payload.body,
-        content=payload.body,
-        attachment_url=payload.attachment_url,
-        attachment_type=payload.attachment_type,
-    )
-    db.add(message)
+    user_id = current_user.id
     db.commit()
-    db.refresh(message)
-    message_cache.add_message(
-        "care",
-        conversation_id,
-        {
-            "id": message.id,
-            "conversation_id": message.conversation_id,
-            "sender_id": message.sender_id,
-            "sender_type": message.sender_type,
-            "body": message.body,
-            "content": message.content,
-            "attachment_url": message.attachment_url,
-            "attachment_type": message.attachment_type,
-            "created_at": message.created_at,
-        },
-    )
+    check_send_rate(user_id)
+    with admitted(send_slots):
+        message, _ = send_message(
+            db, conversation_id=conversation_id, sender_id=user_id,
+            client_message_id=str(payload.client_message_id) if payload.client_message_id else None,
+            body=payload.body, attachment_url=payload.attachment_url, attachment_type=payload.attachment_type,
+        )
     return message

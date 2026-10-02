@@ -1,6 +1,7 @@
 import WorkspaceShell from "./features/workspace/WorkspaceShell";
 import AccountsIdentity from "./features/accounts/AccountsPage";
 import Jobs from "./features/jobs/JobsPage";
+import CareChat from "./features/chat/CareChat";
 import Consultation, { formatDateTime } from "./features/consultation/ConsultationPage";
 import { roleLabel, statusLabel } from "./lib/presentation";
 import { StrictMode, type ReactNode, useState } from "react";
@@ -11,7 +12,7 @@ import { BadgeCheck, Bell, BookOpenCheck, BriefcaseMedical, CheckCircle2, Clipbo
 import "./styles.css";
 import OverviewPage from "./features/overview/OverviewPage";
 
-import type { View, PatientHomepage, CaregiverResume, ServiceReview, AdminSummary, AdminUser, AdminCertification, AdminAiModelConfig, AdminLog, AdminKnowledgeItem, RoleName, AccountRead, AuthResponse, CareConversation, CareMessage } from "./types";
+import type { View, PatientHomepage, CaregiverResume, ServiceReview, AdminSummary, AdminUser, AdminCertification, AdminAiModelConfig, AdminLog, AdminKnowledgeItem, RoleName, AccountRead, AuthResponse, CareConversation } from "./types";
 const navItems: Array<{ id: View; label: string; icon: ReactNode; adminOnly?: boolean }> = [
   { id: "overview", label: "流程总览", icon: <LayoutDashboard size={18} /> },
   { id: "accounts", label: "我的信息", icon: <UserCheck size={18} /> },
@@ -268,7 +269,7 @@ function App() {
         </header>
 
         {activeView === "profiles" && <Profiles account={account} onOpenChat={() => setActiveView("chat")} />}
-        {activeView === "chat" && <CareChat account={account} />}
+        {activeView === "chat" && <CareChat key={account.id} account={account} />}
         {activeView === "verification" && isAdmin && <Verification />}
         {activeView === "knowledge" && isAdmin && <Knowledge />}
       </section>
@@ -279,18 +280,6 @@ function App() {
 
 
 
-
-function sourceTypeLabel(sourceType: string | undefined | null) {
-  const labels: Record<string, string> = {
-    job: "招聘",
-    application: "应聘",
-    invitation: "邀请",
-    profile: "资料",
-    direct: "直接沟通",
-    smoke: "测试"
-  };
-  return labels[sourceType || ""] || sourceType || "直接沟通";
-}
 
 function knowledgeStatusLabel(status: string | undefined | null) {
   const labels: Record<string, string> = {
@@ -871,146 +860,6 @@ function Profiles({ account, onOpenChat }: { account: AccountRead; onOpenChat: (
             </div>
           ))}
           {conversationReviews.length === 0 && <p className="mutedText">加载已匹配会话后，可查看双方评价。</p>}
-        </div>
-      </article>
-    </section>
-  );
-}
-
-function CareChat({ account }: { account: AccountRead }) {
-  const [conversations, setConversations] = useState<CareConversation[]>([]);
-  const [messages, setMessages] = useState<CareMessage[]>([]);
-  const [selectedConversationId, setSelectedConversationId] = useState("");
-  const [messageBody, setMessageBody] = useState("");
-  const [notice, setNotice] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await apiFetch(path, {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...(init?.headers ?? {})
-      }
-    });
-    if (!response.ok) {
-      const message = await response.text();
-      throw new Error(message || `接口返回 ${response.status}`);
-    }
-    return response.json() as Promise<T>;
-  }
-
-  async function loadConversations() {
-    setLoading(true);
-    setNotice("");
-    try {
-      const rows = await requestJson<CareConversation[]>(`/api/v1/conversations?user_id=${encodeURIComponent(account.id)}`);
-      setConversations(rows);
-      const nextId = selectedConversationId || rows[0]?.id || "";
-      setSelectedConversationId(nextId);
-      if (nextId) {
-        await loadMessages(nextId);
-      } else {
-        setMessages([]);
-      }
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "加载会话失败。");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function loadMessages(conversationId: string) {
-    if (!conversationId) {
-      setMessages([]);
-      return;
-    }
-    try {
-      setSelectedConversationId(conversationId);
-      setMessages(
-        await requestJson<CareMessage[]>(
-          `/api/v1/conversations/${conversationId}/messages?user_id=${encodeURIComponent(account.id)}`
-        )
-      );
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "加载消息失败。");
-    }
-  }
-
-  async function sendMessage() {
-    if (!selectedConversationId || !messageBody.trim()) {
-      return;
-    }
-    try {
-      await requestJson<CareMessage>(`/api/v1/conversations/${selectedConversationId}/messages`, {
-        method: "POST",
-        body: JSON.stringify({
-          sender_id: account.id,
-          body: messageBody.trim()
-        })
-      });
-      setMessageBody("");
-      await loadMessages(selectedConversationId);
-      await loadConversations();
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : "发送消息失败。");
-    }
-  }
-
-  useEffect(() => {
-    void loadConversations();
-  }, [account.id]);
-
-  return (
-    <section className="chatLayout">
-      <article className="panel conversationPanel">
-        <div className="panelHeader compact">
-          <h2>我的会话</h2>
-          <button className="iconButton" onClick={loadConversations} title="刷新会话" type="button">
-            {loading ? <Loader2 className="spin" size={19} /> : <RefreshCw size={19} />}
-          </button>
-        </div>
-        {notice && <p className="notice">{notice}</p>}
-        <div className="miniList">
-          {conversations.map((conversation) => (
-            <button
-              className={`conversationTile ${selectedConversationId === conversation.id ? "active" : ""}`}
-              key={conversation.id}
-              onClick={() => void loadMessages(conversation.id)}
-              type="button"
-            >
-              <strong>{conversation.title || "护理沟通"}</strong>
-              <span>{sourceTypeLabel(conversation.source_type)} / {conversation.updated_at || conversation.created_at || "暂无时间"}</span>
-            </button>
-          ))}
-          {conversations.length === 0 && <p className="mutedText">暂无会话，可在招聘或应聘发布页面点击“沟通”创建。</p>}
-        </div>
-      </article>
-
-      <article className="panel chatPanel">
-        <div className="panelHeader compact">
-          <h2>聊天窗口</h2>
-          <MessageSquareText size={20} />
-        </div>
-        <div className="messageList">
-          {messages.map((message) => (
-            <div className={`messageBubble ${message.sender_id === account.id ? "mine" : ""}`} key={message.id}>
-              <span>{message.sender_id === account.id ? "我" : message.sender_id}</span>
-              <p>{message.body || message.content}</p>
-            </div>
-          ))}
-          {messages.length === 0 && <p className="mutedText">选择会话后开始沟通。</p>}
-        </div>
-        <div className="chatComposer">
-          <textarea
-            placeholder="输入沟通内容"
-            value={messageBody}
-            onChange={(event) => setMessageBody(event.target.value)}
-          />
-          <button className="primaryButton" disabled={!selectedConversationId || !messageBody.trim()} onClick={sendMessage} type="button">
-            <Send size={18} />
-            <span>发送</span>
-          </button>
         </div>
       </article>
     </section>

@@ -323,6 +323,8 @@ export type CareConversation = {
   source_type: string;
   source_id?: string | null;
   title: string;
+  last_seq: number;
+  last_message_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
 };
@@ -330,6 +332,8 @@ export type CareConversation = {
 export type CareMessage = {
   id: string;
   conversation_id: string;
+  seq: number;
+  client_message_id?: string | null;
   sender_id?: string | null;
   sender_type: string;
   body: string;

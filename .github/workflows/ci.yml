@@ -108,5 +108,5 @@ jobs:
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m alembic -c alembic.mysql.ini upgrade head
       - run: python -m alembic -c alembic.mysql.ini upgrade head
-      - run: python -m pytest tests/test_mysql_integration.py -q
+      - run: python -m pytest tests/test_mysql_integration.py tests/test_care_chat_mysql.py -q
       - run: docker compose config --quiet
