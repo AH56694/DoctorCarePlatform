@@ -21,6 +21,6 @@ pytesseract>=0.3.10
 cohere>=4.0.0
 numpy>=1.24.0
 mysql-connector-python>=8.2.0
-redis==5.2.1
+redis==8.1.0
 aiohttp>=3.14.3,<4
 torch>=2.13,<3
